@@ -51,11 +51,13 @@ class Chrome:
                  user_agent=None, 
                  display=True,
                  chrome_path=None,
+                 chrome_user_data_dir=None,
+                 chrome_profile=None,
+                 extra_cmd_args=None,
                  remote_url=None,
                  before_request_sent_callback=None,
                  after_response_reveiced_callback=None,
                  execution_context_created_callback=None,
-                 chrome_profile=None,
                  start_position=(0, 0),
                  window_size=(1024, 768),
                  disable_cache=False,
@@ -67,11 +69,13 @@ class Chrome:
         user_agent: Specify user-agent.
         display: A boolean that tells ghost to displays UI. Headless model. Chrome version >= 59.
         chrome_path: Path of chrome binary file, if value is None will use default path.
+        chrome_user_data_dir: To specify the user data directory(Storage location for custom configuration files, extensions, caches, and other data), will add the "--user-data-dir=..." parameter in chrome command line.
+        chrome_profile: To specify the profile directoy, will add the "--profile-directory=..." parameter in chrome command line.
+        extra_cmd_args: Extra arguments to be added into the chrome command line.
         before_request_sent_callback: Fired when page is about to send HTTP request.
         after_response_reveiced_callback: Fired when HTTP response is available.
         execution_context_created_callback: Fired when new execution context is created.
-        chrome_profile: Use specify profile directoy.
-        start_position: The start window position.
+         start_position: The start window position.
         window_size: The start window size.
         disable_cache: Do not use chache.
         debug: Print debug info if value is True. 
@@ -83,6 +87,10 @@ class Chrome:
         self.remote_url = remote_url
         self.user_agent = user_agent
         self.display = display
+        self.chrome_path = chrome_path
+        self.chrome_user_data_dir = chrome_user_data_dir
+        self.chrome_profile = chrome_profile
+        self.extra_cmd_args = extra_cmd_args
         self.before_request_sent_callback = before_request_sent_callback
         self.after_response_reveiced_callback = after_response_reveiced_callback
         self.execution_context_created_callback = execution_context_created_callback
@@ -90,7 +98,6 @@ class Chrome:
         self.start_position = start_position
         self.window_size = window_size
         self.disable_cache = disable_cache
-        self.chrome_profile = chrome_profile
         self.debug = debug
         self.requests = {}
         if proxy:
@@ -118,8 +125,12 @@ class Chrome:
         if not self.remote_url:
             # Not specify remoge_url, will start a chrome instance
             # Chrome path
-            self.chrome_path = chrome_path or self.get_default_chrome_path()
-            print(self.chrome_path)
+            self.chrome_path = self.chrome_path or self.get_default_chrome_path()
+            if not self.chrome_path:
+                raise Exception('Can not find chrome binary file.')
+            else:
+                if self.debug:
+                    print('Use chrome binary file: "{}"'.format(self.chrome_path))
             
             # "Google Chrome Dev Protocol" listen port
             self.dev_protocol_port = find_free_port()
@@ -128,7 +139,10 @@ class Chrome:
             
             # Ignore certificate errors
             # '--ignore-certificate-errors'
-            chrome_args = ['--remote-allow-origins=*', '--disable-web-security', '--disable-features=IsolateOrigins,site-per-process', '--disable-site-isolation-trials']
+            chrome_args = []
+            if self.extra_cmd_args:
+                chrome_args.extend(self.extra_cmd_args)
+            chrome_args.extend(['--remote-allow-origins=*', '--disable-web-security', '--disable-features=IsolateOrigins,site-per-process', '--disable-site-isolation-trials'])
             chrome_args.append('--remote-debugging-port={}'.format(self.dev_protocol_port))
             # Add proxy
             if self.proxy:
@@ -140,9 +154,14 @@ class Chrome:
                 if self.debug:
                     print('Set User-agent into "{}"'.format(self.user_agent))
                 chrome_args.append('--user-agent="{}"'.format(self.user_agent))
+            # Chrome user data directory
+            if self.chrome_user_data_dir:
+                if self.debug:
+                    print('Set --user-data-dir into "{}"'.format(self.chrome_user_data_dir))
+                chrome_args.append('--user-data-dir="{}"'.format(self.chrome_user_data_dir))
             # Chrome profile
             if self.chrome_profile:
-                # Chrome "User Data" default directory: C:\Users\Administrator\AppData\Local\Google\Chrome\User Data
+                # Chrome default user profile directory: C:\Users\Administrator\AppData\Local\Google\Chrome\User Data\Default
                 if self.debug:
                     print('Set --profile-directory into "{}"'.format(self.chrome_profile))
                 chrome_args.append('--profile-directory="{}"'.format(self.chrome_profile))
@@ -213,7 +232,10 @@ class Chrome:
                     return '"{}"'.format(chrome_path)
         elif system_type == 'Linux':
             # On Linux
-            return '/usr/bin/google-chrome'
+            for chrome_path in ['/usr/bin/google-chrome',
+                                '/usr/bin/google-chrome-stable']:
+                if os.path.exists(chrome_path):
+                    return '"{}"'.format(chrome_path)
         
     def __request_intercepted(self, interceptionId, request, **kwargs):
         """Network.requestIntercepted Callback
@@ -543,6 +565,8 @@ class Chrome:
 
 
     def quit(self):
+        """Close all tabs, exit the chrome
+        """
         if self.chrome_process:
             # 获取子进程ID
             chrome_pids = self.get_chrome_subpids()
