@@ -1,7 +1,7 @@
 Python3版本chromepy
 
 ## 如何使用指定的浏览器？如何传递额外的命令行参数给浏览器？
-chromepy.Chrome的chrome_path参数可以用来指定具体使用哪个浏览器，不指定的情况下默认使用系统默认的浏览器。如下示例，指定使用指纹浏览器VirtualBrowser。通过chromepy.Chrome的extra_cmd_args参数可以向浏览器传递额外的命令参数。
+chromepy.Chrome的`chrome_path`参数可以用来指定具体使用哪个浏览器，不指定的情况下默认使用系统默认的浏览器。如下示例，指定使用指纹浏览器VirtualBrowser。另外，通过chromepy.Chrome的`extra_cmd_args`参数可以向浏览器传递额外的命令参数。
 ```python
 from chromepy import chrome
 
@@ -15,9 +15,9 @@ browser.quit()
 
 
 ## 如何实现多线程（进程）？
-1. 默认情况下，Chrome浏览器使用固定的用户数据存储目录（例如，Windows下"~\AppData\Local\Chromium\User Data", Linux下"~/.config/google-chrome"），所以只能启动一个Chrome浏览器实例。
-2. 可以通过--user-data-dir参数来指定用户数据存储目录，不同的Chrome浏览器实例使用不同的用户数据目录，从而实现同时启动多个Chrome浏览器实例。chromepy.Chrome现已添加chrome_user_data_dir参数来支持此功能，如下示例。当然，也可以像上面例子一样，通过extra_cmd_args参数来指定--user-data-dir参数来指定用户数据存储目录的路径。
-3. 同一个用户数据目录下可以支持多个不同的用户配置目录，每个目录对应一个浏览器用户，默认的用户配置目录是"Default"（例如，Windows下"~\AppData\Local\Chromium\User Data\Default", Linux下"~/.config/google-chrome/Default"）。chromepy.Chrome的chrome_profile参数可以用来指定具体使用哪个用户目录，不指定的情况下默认使用"Default"。当然，也可以向上面例子一样，通过extra_cmd_args参数来指定--profile-directory参数来指定用户配置目录（例如，'--profile-directory="Profile1"'）。
+1. 默认情况下，Chrome浏览器使用固定的用户数据存储目录（例如，Windows下`~\AppData\Local\Chromium\User Data`, Linux下`~/.config/google-chrome`），所以只能启动一个Chrome浏览器实例。
+2. 可以通过`--user-data-dir`参数来指定用户数据存储目录，不同的Chrome浏览器实例使用不同的用户数据目录，从而实现同时启动多个Chrome浏览器实例。chromepy.Chrome现已添加`chrome_user_data_dir`参数来支持此功能，如下示例。当然，也可以像上面例子一样，通过`extra_cmd_args`参数来指定`--user-data-dir`参数来指定用户数据存储目录的路径。
+3. 同一个用户数据目录下可以支持多个不同的用户配置目录，每个目录对应一个浏览器用户，默认的用户配置目录是`Default`（例如，Windows下`~\AppData\Local\Chromium\User Data\Default`, Linux下`~/.config/google-chrome/Default`）。chromepy.Chrome的`chrome_profile`参数可以用来指定具体使用哪个用户目录，不指定的情况下默认使用`Default`。当然，也可以向上面例子一样，通过`extra_cmd_args`参数来指定`--profile-directory`参数来指定用户配置目录（例如，`'--profile-directory="Profile1"'`）。
 
 ```python
 import os
@@ -50,7 +50,7 @@ Port 127.0.0.1:50768 is open
 browser2.remote_url: http://127.0.0.1:50768
 ```
 
-## 如何实现在Chrome浏览器启动前清理掉历史的Cookies和Cache？
-创建Chrome实例前，先删除掉对应的用户配置目录即可。
+## 如何实现在Chrome浏览器启动前清理掉历史的cookies和cache？
+创建chromepy.Chrome实例前，先删除掉对应的用户配置目录即可。
 
 
