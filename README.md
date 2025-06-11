@@ -1,4 +1,7 @@
-Python3版本chromepy
+# chromepy
+
+基于`Google Chrome Dev Protocol`协议实现对Chrome浏览器的控制，避免被检测为自动化测试工具。
+
 
 ## 如何使用指定的浏览器？如何传递额外的命令行参数给浏览器？
 chromepy.Chrome的`chrome_path`参数可以用来指定具体使用哪个浏览器，不指定的情况下默认使用系统默认的浏览器。如下示例，指定使用指纹浏览器VirtualBrowser。另外，通过chromepy.Chrome的`extra_cmd_args`参数可以向浏览器传递额外的命令参数。

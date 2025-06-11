@@ -1,25 +1,26 @@
 # coding: utf-8
 # chrome.py
-# 使用Google Chrome Dev Protocol控制Chrome浏览器
+# Use "Google Chrome Dev Protocol" to automate Chrome
 # https://chromedevtools.github.io/devtools-protocol/
 
-import sys
 import os
 import platform
 import re
 import time
 import socket
-import threading
 import base64
 import pprint
-# https://github.com/fate0/pychrome
-import pychrome
 import subprocess
 import psutil
+import tempfile
+import shutil
 from signal import SIGTERM
 from contextlib import closing
-from base64 import b64encode
 from http.cookiejar import Cookie, LWPCookieJar
+from . import cdp
+
+
+IS_LINUX = platform.system() == 'Linux'
 
 def find_free_port():
     """pick a free port number
@@ -34,10 +35,10 @@ def check_socket(host, port):
     """
     with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
         if sock.connect_ex((host, port)) == 0:
-            print("Port {}:{} is open".format(host, port))
+            print("[Debug]Port {}:{} is open".format(host, port))
             return True
         else:
-            print("Port {}:{} is not open".format(host, port))
+            print("[Debug]Port {}:{} is not open".format(host, port))
             return False
 
 class TimeoutError(Exception):
@@ -60,7 +61,6 @@ class Chrome:
                  execution_context_created_callback=None,
                  start_position=(0, 0),
                  window_size=(1024, 768),
-                 disable_cache=False,
                  debug=False):
         """Startup a chrome instance
         proxy: Proxy to use.
@@ -75,15 +75,17 @@ class Chrome:
         before_request_sent_callback: Fired when page is about to send HTTP request.
         after_response_reveiced_callback: Fired when HTTP response is available.
         execution_context_created_callback: Fired when new execution context is created.
-         start_position: The start window position.
+        start_position: The start window position.
         window_size: The start window size.
-        disable_cache: Do not use chache.
         debug: Print debug info if value is True. 
         """
-        self.proxy = None
-        self.proxy_credentials = None
+        self.proxy_url = None
+        self.proxy_scheme = None
+        self.proxy_host = None
+        self.proxy_port = None
         self.proxy_username = None
         self.proxy_password = None
+        self.proxy_extension_dir = None
         self.remote_url = remote_url
         self.user_agent = user_agent
         self.display = display
@@ -97,30 +99,38 @@ class Chrome:
         self.download_images = download_images
         self.start_position = start_position
         self.window_size = window_size
-        self.disable_cache = disable_cache
         self.debug = debug
+        self.browser = None
+        self.chrome_process = None
+        self.vdisplay = None
+        self.temp_chrome_user_data_dir = None
         self.requests = {}
         if proxy:
+            m = re.compile(r'^([a-z\d]+)\://', re.IGNORECASE).search(proxy)
+            if m:
+                self.proxy_scheme = m.group(1).lower()
+                if self.proxy_scheme == 'https':
+                    self.proxy_scheme = 'http'
+                proxy = re.compile(r'^[a-z\d]+\://', re.IGNORECASE).sub('', proxy)
+            else:
+                self.proxy_scheme = 'http'
+            if self.proxy_scheme not in ['http', 'socks5']:
+                raise Exception('Unsupported proxy type: {}'.format(self.proxy_scheme))
             match = re.match(r'((?P<username>\w+):(?P<password>\w+)@)?(?P<host>\d{1,3}.\d{1,3}.\d{1,3}.\d{1,3})(:(?P<port>\d+))?', proxy)
             if not match:
                 match = re.compile(r'((?P<username>\w+):(?P<password>\w+)@)?(?P<host>[a-z\d\.\-]+)(:(?P<port>\d+))?', re.IGNORECASE).match(proxy)
             if match:
                 groups = match.groupdict()
-                proxy_username = groups.get('username')
-                proxy_password = groups.get('password')
-                proxy_host = groups.get('host') 
-                proxy_port = int(groups.get('port'))
-                if proxy_username and proxy_password:
-                    # Proxy-Authorization credentials
-                    credentials = '{}:{}'.format(proxy_username, proxy_password)
-                    self.proxy_credentials = b64encode(credentials.encode('UTF-8'))
-                self.proxy = '{}:{}'.format(proxy_host, proxy_port)
-                self.proxy_username = proxy_username
-                self.proxy_password = proxy_password
+                self.proxy_username = groups.get('username')
+                self.proxy_password = groups.get('password')
+                self.proxy_host = groups.get('host') 
+                self.proxy_port = int(groups.get('port'))
+                self.proxy_url = '{}://{}:{}'.format(self.proxy_scheme, self.proxy_host, self.proxy_port)
             if self.debug:
-                print('proxy:', self.proxy)
-                print('proxy_username:', self.proxy_username)
-                print('proxy_password:', self.proxy_password)
+                print('[Debug]proxy_url:', self.proxy_url)
+                if self.proxy_username and self.proxy_password:
+                    print('[Debug]proxy_username:', self.proxy_username)
+                    print('[Debug]proxy_password:', self.proxy_password)
         
         if not self.remote_url:
             # Not specify remoge_url, will start a chrome instance
@@ -130,70 +140,120 @@ class Chrome:
                 raise Exception('Can not find chrome binary file.')
             else:
                 if self.debug:
-                    print('Use chrome binary file: "{}"'.format(self.chrome_path))
+                    print('[Debug]Use chrome binary file: "{}"'.format(self.chrome_path))
             
             # "Google Chrome Dev Protocol" listen port
             self.dev_protocol_port = find_free_port()
             
             self.remote_url = 'http://127.0.0.1:{}'.format(self.dev_protocol_port)
             
-            # Ignore certificate errors
-            # '--ignore-certificate-errors'
-            chrome_args = []
+            # Some default arguments for chrome command line
+            chrome_args = [
+                    '--remote-allow-origins=*',
+                    '--no-first-run',
+                    '--no-service-autorun',
+                    '--disable-auto-reload',
+                    '--no-default-browser-check',
+                    '--homepage=about:blank',
+                    '--no-pings',
+                    '--wm-window-animations-disabled',
+                    '--animation-duration-scale=0',
+                    '--enable-privacy-sandbox-ads-apis',
+                    '--safebrowsing-disable-download-protection',
+                    '--simulate-outdated-no-au="Tue, 31 Dec 2099 23:59:59 GMT"',
+                    '--password-store=basic',
+                    '--deny-permission-prompts',
+                    '--disable-infobars',
+                    '--disable-breakpad',
+                    '--disable-prompt-on-repost',
+                    '--disable-password-generation',
+                    '--disable-ipc-flooding-protection',
+                    '--disable-background-timer-throttling',
+                    '--disable-search-engine-choice-screen',
+                    '--disable-backgrounding-occluded-windows',
+                    '--disable-client-side-phishing-detection',
+                    '--disable-top-sites',
+                    '--disable-translate',
+                    '--disable-renderer-backgrounding',
+                    '--disable-background-networking',
+                    '--disable-dev-shm-usage',
+                    '--disable-features=IsolateOrigins,site-per-process,Translate,InsecureDownloadWarnings,DownloadBubble,DownloadBubbleV2,OptimizationTargetPrediction,OptimizationGuideModelDownloading,SidePanelPinning,UserAgentClientHint,PrivacySandboxSettings4,DisableLoadExtensionCommandLineSwitch',
+                    '--disable-features=IsolateOrigins,site-per-process',
+                    '--disable-session-crashed-bubble',
+                    '--remote-debugging-host=127.0.0.1']
+            if self.debug:
+                print('[Debug]Default chrome command line arguments: {}'.format(chrome_args))
             if self.extra_cmd_args:
-                chrome_args.extend(self.extra_cmd_args)
-            chrome_args.extend(['--remote-allow-origins=*', '--disable-web-security', '--disable-features=IsolateOrigins,site-per-process', '--disable-site-isolation-trials'])
-            chrome_args.append('--remote-debugging-port={}'.format(self.dev_protocol_port))
-            # Add proxy
-            if self.proxy:
                 if self.debug:
-                    print('Set proxy into {}'.format(proxy))
-                chrome_args.append('--proxy-server="https={};http={}"'.format(self.proxy, self.proxy))
+                    print('[Debug]Add extra command line arguments: {}'.format(self.extra_cmd_args))
+                chrome_args.extend(self.extra_cmd_args)
+            #chrome_args.extend(['--remote-allow-origins=*', '--disable-web-security', '--disable-features=IsolateOrigins,site-per-process', '--disable-site-isolation-trials'])
+            chrome_args.append('--remote-debugging-port={}'.format(self.dev_protocol_port))
+            # Set proxy
+            if self.proxy_url:
+                if not self.proxy_username:
+                    if self.debug:
+                        print('[Debug]Set proxy into {}'.format(self.proxy_url))
+                    chrome_args.append('--proxy-server="{}"'.format(self.proxy_url))
+                else:
+                    # Create a proxy extension for proxy with authentication
+                    self.proxy_extension_dir = self.create_proxy_extension(scheme=self.proxy_scheme, host=self.proxy_host, port=self.proxy_port, username=self.proxy_username, password=self.proxy_password)
+                    if self.debug:
+                        print('[Debug]Create proxy extension directory: "{}"'.format(self.proxy_extension_dir))
+                    chrome_args.append('--load-extension={}'.format(os.path.abspath(self.proxy_extension_dir)))
             # User-agent
             if self.user_agent:
                 if self.debug:
-                    print('Set User-agent into "{}"'.format(self.user_agent))
+                    print('[Debug]Set User-agent into "{}"'.format(self.user_agent))
                 chrome_args.append('--user-agent="{}"'.format(self.user_agent))
-            # Chrome user data directory
+            # # Chrome user data directory
             if self.chrome_user_data_dir:
                 if self.debug:
-                    print('Set --user-data-dir into "{}"'.format(self.chrome_user_data_dir))
+                    print('[Debug]Set --user-data-dir into "{}"'.format(self.chrome_user_data_dir))
                 chrome_args.append('--user-data-dir="{}"'.format(self.chrome_user_data_dir))
+            else:
+                self.temp_chrome_user_data_dir = os.path.normpath(tempfile.mkdtemp())
+                if self.debug:
+                    print('[Debug]Create a temporary user data directory: "{}"'.format(self.temp_chrome_user_data_dir))
+                chrome_args.append('--user-data-dir="{}"'.format(self.temp_chrome_user_data_dir))
+
             # Chrome profile
             if self.chrome_profile:
                 # Chrome default user profile directory: C:\Users\Administrator\AppData\Local\Google\Chrome\User Data\Default
                 if self.debug:
-                    print('Set --profile-directory into "{}"'.format(self.chrome_profile))
+                    print('[Debug]Set --profile-directory into "{}"'.format(self.chrome_profile))
                 chrome_args.append('--profile-directory="{}"'.format(self.chrome_profile))
             # Headless model
             if not self.display:
                 if self.debug:
-                    print('Use headless model: --headless --no-sandbox --disable-gpu')
+                    print('[Debug]Use headless model: --headless --no-sandbox --disable-gpu')
                 chrome_args.append('--headless --no-sandbox --disable-gpu')
             # Start position
             if self.start_position:
                 if self.debug:
-                    print('Set --window-position={},{}'.format(self.start_position[0], self.start_position[1]))
+                    print('[Debug]Set --window-position={},{}'.format(self.start_position[0], self.start_position[1]))
                 chrome_args.append('--window-position={},{}'.format(self.start_position[0], self.start_position[1]))
             # Start window size
             if self.window_size:
                 if self.debug:
-                    print('Set --window-size={},{}'.format(self.window_size[0], self.window_size[1]))
+                    print('[Debug]Set --window-size={},{}'.format(self.window_size[0], self.window_size[1]))
                 chrome_args.append('--window-size={},{}'.format(self.window_size[0], self.window_size[1]))
-            if self.disable_cache:
-                if self.debug:
-                    print('Set --disable-application-cache --media-cache-size=1 --disk-cache-size=1')
-                chrome_args.append('--disable-application-cache --media-cache-size=1 --disk-cache-size=1')
-            
+
             # Start chrome
             cmd = self.chrome_path + ' ' + ' '.join(chrome_args)
             if self.debug:
-                print('Starting chrome with "{}"'.format(' '.join(chrome_args).strip()))
-                print(cmd)
-            self.chrome_process = subprocess.Popen(cmd, env=os.environ.copy(), shell=True)         
+                print('[Debug]Full cmd for start chrome:', cmd)
+            if IS_LINUX:
+                from xvfbwrapper import Xvfb
+                if not self.vdisplay:
+                    if self.debug:
+                        print('[Debug]Start Xvfb...')
+                    self.vdisplay = Xvfb(width=1920, height=1080, colordepth=24)
+                    self.vdisplay.start()
+            self.chrome_process = subprocess.Popen(cmd, env=os.environ.copy(), shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)         
         else:
             if not proxy:
-                print('Since the chrome has started, the proxy parameter will be ignored.')
+                print('[Debug]Since the chrome has started, the proxy parameter will be ignored.')
             m = re.compile(r'\:(\d+)').search(self.remote_url)
             if m:
                 self.dev_protocol_port = int(m.groups()[0])
@@ -205,14 +265,14 @@ class Chrome:
                 break
             else:
                 num += 1
-                if num >= 60:
+                if num >= 20:
                     self.quit()
-                    raise Exception('Can not connect to chrome during 60 seconds.')
+                    raise Exception('Can not connect to chrome during 20 seconds.')
                 else:
                     time.sleep(1)
 
         # create a browser instance
-        self.browser = pychrome.Browser(url=self.remote_url)
+        self.browser = cdp.Browser(url=self.remote_url)
         self.tab = None
         
     def get_default_chrome_path(self):
@@ -220,53 +280,99 @@ class Chrome:
         """
         # Chrome installed in the default location for each system:
         # https://github.com/SeleniumHQ/selenium/wiki/ChromeDriver#requirements
-        system_type = platform.system()
-        if system_type == 'Windows':
-            # On Windows
-            for chrome_path in [r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
-                                r'C:\Program Files\Google\Chrome\Application\chrome.exe',
-                                os.path.join(os.path.expanduser('~'), 'AppData\\Local\\Google\\Chrome\\Application\\chrome.exe'),
-                                os.path.join(os.path.expanduser('~'), 'Local Settings\\Application Data\\Google\\Chrome\\Application\\chrome.exe'),
-                                ]:
-                if os.path.exists(chrome_path):
-                    return '"{}"'.format(chrome_path)
-        elif system_type == 'Linux':
-            # On Linux
-            for chrome_path in ['/usr/bin/google-chrome',
-                                '/usr/bin/google-chrome-stable']:
-                if os.path.exists(chrome_path):
-                    return '"{}"'.format(chrome_path)
+        candidates = set()
         
-    def __request_intercepted(self, interceptionId, request, **kwargs):
-        """Network.requestIntercepted Callback
-        """
-        if self.debug:
-            print("Intercepted request {}".format(request.get('url')))
-        headers = request.get('headers', {})
-        if self.user_agent:
-            # Change UA
-            headers['User-Agent'] = self.user_agent
-        auth_challenge = kwargs.get('authChallenge')
-        if auth_challenge:
-            try:
-                # 30x redirect with http proxy auth
-                self.tab.Network.continueInterceptedRequest(
-                    interceptionId=interceptionId,
-                    headers=headers,
-                    authChallengeResponse={'response': 'ProvideCredentials', 
-                                           'username': self.proxy_username,
-                                           'password': self.proxy_password}
-                )
-            except Exception as e:
-                print('Exception when call Network.continueInterceptedRequest: {}'.format(str(e)))
+        if not IS_LINUX:
+            # Windows
+            for item in map(os.environ.get, ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA", "PROGRAMW6432")):
+                if item is not None:
+                    for subitem in ("Google/Chrome/Application",):
+                        candidates.add(os.sep.join((item, subitem, "chrome.exe")))
         else:
-            try:
-                self.tab.Network.continueInterceptedRequest(
-                    interceptionId=interceptionId,
-                    headers=headers
-                )
-            except Exception as e:
-                print('Exception when call Network.continueInterceptedRequest: {}'.format(str(e)))
+            # Linux
+            for item in os.environ.get("PATH").split(os.pathsep):
+                for subitem in (
+                    "google-chrome",
+                    "chromium",
+                    "chromium-browser",
+                    "chrome",
+                    "google-chrome-stable",
+                ):
+                    candidates.add(os.sep.join((item, subitem)))
+        for candidate in candidates:
+            if os.path.exists(candidate) and os.access(candidate, os.X_OK):
+                return os.path.normpath(candidate)
+            
+    def create_proxy_extension(self, scheme, host, port, username, password):
+        """ Create a proxy extension file.
+        """
+        manifest_json = """
+        {
+        "version": "1.0.0",
+        "manifest_version": 3,
+        "name": "Chrome Proxy",
+        "permissions": [
+            "proxy",
+            "tabs",
+            "unlimitedStorage",
+            "storage",
+            "webRequest",
+            "webRequestAuthProvider"
+        ],
+        "host_permissions": [
+            "<all_urls>"
+        ],
+        "background": {
+            "service_worker": "background.js"
+        },
+        "minimum_chrome_version":"88.0.0"
+        }
+        """
+
+        background_js = """
+        var config = {
+            mode: "fixed_servers",
+            rules: {
+                singleProxy: {
+                    scheme: "%s",
+                    host: "%s",
+                    port: %d
+                },
+                bypassList: ["localhost"]
+            }
+        };
+
+        chrome.proxy.settings.set({value: config, scope: "regular"}, function() {});
+
+        function callbackFn(details) {
+            return {
+                authCredentials: {
+                    username: "%s",
+                    password: "%s"
+                }
+            };
+        }
+
+        chrome.webRequest.onAuthRequired.addListener(
+            callbackFn,
+            { urls: ["<all_urls>"] },
+            ['blocking']
+        );
+        """ % (
+            scheme,
+            host,
+            port,
+            username,
+            password
+        )
+
+        proxy_extension_dir = tempfile.mkdtemp()
+        with open(os.path.join(proxy_extension_dir, "manifest.json"), "w") as f:
+            f.write(manifest_json)
+        with open(os.path.join(proxy_extension_dir, "background.js"), "w") as f:
+            f.write(background_js)
+        return proxy_extension_dir
+            
         
     def __request_will_be_sent(self, request, **kwargs):
         """Network.requestWillBeSent Callback
@@ -304,12 +410,12 @@ class Chrome:
                         body_text = base64.decodestring(body_text)
                 except Exception as e:
                     if self.debug:
-                        print('Failed to get response body for "{}": {}'.format(request.get('url'), str(e)))
+                        print('[Debug]Failed to get response body for "{}": {}'.format(request.get('url'), str(e)))
                     body_text = ''
                 self.after_response_reveiced_callback(request, response, body_text)
             else:
                 if self.debug:
-                    print('Does not find related reponse data for requestId: {}'.format(requestId))
+                    print('[Debug]Does not find related reponse data for requestId: {}'.format(requestId))
              
 
     def get_tab(self):
@@ -325,14 +431,7 @@ class Chrome:
                 self.tab = self.browser.new_tab()
             self.tab.start()
             self.tab.Page.stopLoading()
-            if self.proxy_credentials:
-                if self.debug:
-                    print('Add Network.requestIntercepted callback')
-                # Need to add Proxy-Authorization credentials
-                self.tab.Network.requestIntercepted = self.__request_intercepted
-                # setRequestInterceptionEnabled has been removed, should use setRequestInterception now
-                self.tab.Network.setRequestInterception(patterns=[{"RequestPattern": '*'}])
-                need_network_enabled = True
+            self.tab.Extensions.loadUnpacked(path="F:/scrapers/test/tmp0unxbivn")
             if self.user_agent:
                 # Set User-Agent header
                 self.tab.Network.setExtraHTTPHeaders(headers={'User-Agent': self.user_agent})
@@ -343,12 +442,12 @@ class Chrome:
                 need_network_enabled = True
             if self.before_request_sent_callback or self.after_response_reveiced_callback:
                 if self.debug:
-                    print('Add Network.requestWillBeSent callback')
+                    print('[Debug]Add Network.requestWillBeSent callback')
                 self.tab.Network.requestWillBeSent = self.__request_will_be_sent
                 need_network_enabled = True
             if self.after_response_reveiced_callback:
                 if self.debug:
-                    print('Add Network.responseReceived callback')
+                    print('[Debug]Add Network.responseReceived callback')
                 self.tab.Network.responseReceived = self.__response_received
                 self.tab.Network.loadingFinished = self.__loading__finished
                 need_network_enabled = True
@@ -366,7 +465,7 @@ class Chrome:
         """Load url
         url: URL to load;
         """
-        print('Loading {} ...'.format(url))
+        print('[Debug]Loading {} ...'.format(url))
         if not self.tab:
             self.get_tab()
         self.tab.Page.navigate(url=url, _timeout=timeout)
@@ -520,6 +619,12 @@ class Chrome:
         return self.get_page_html(expression="document.documentElement.outerHTML")
     
     @property
+    def title(self):
+        """Get current page title
+        """
+        return self.evaluate(script="document.title")
+    
+    @property
     def cookies(self):
         """Returns all cookies.
         """
@@ -545,9 +650,11 @@ class Chrome:
     def close_all_tabs(self):
         """Close all tabs, exit the chrome
         """
-        for tab in self.browser.list_tab():
-            self.browser.close_tab(tab)
-        time.sleep(1)
+        if self.browser:
+            for tab in self.browser.list_tab():
+                self.browser.close_tab(tab)
+            time.sleep(1)
+        self.requests.clear()
 
     def get_chrome_subpids(self):
         """获取chrome子进程ID
@@ -557,7 +664,7 @@ class Chrome:
             try:
                 p = psutil.Process(self.chrome_process.pid)
             except psutil.NoSuchProcess:
-                print('Process({}) does not exit.'.format(self.chrome_process.pid))
+                print('[Debug]Process({}) does not exit.'.format(self.chrome_process.pid))
             else:
                 for sub_p in p.children(recursive=True):
                     chrome_pids.append(sub_p.pid)
@@ -568,10 +675,10 @@ class Chrome:
         """Close all tabs, exit the chrome
         """
         if self.chrome_process:
-            # 获取子进程ID
+            # Get all subprocesses of chrome
             chrome_pids = self.get_chrome_subpids()
     
-            # 结束主进程
+            # Terminate the main chrome process
             try:
                 self.close_all_tabs()
             except Exception as e:
@@ -580,15 +687,25 @@ class Chrome:
             self.chrome_process.wait()
             
             if chrome_pids:
-                # 确保进程都退出了
+                # Kill all chrome subprocesses
                 for pid in chrome_pids:
                     try:
                         p = psutil.Process(pid)
-                        print('Killing process({}) {}.'.format(p.pid, p.name()))
+                        if self.debug:
+                            print('[Debug]Killing process({}) {}.'.format(p.pid, p.name()))
                         p.send_signal(SIGTERM)                 
                     except psutil.NoSuchProcess:
-                        print('Chrome process({}) exited indeed.'.format(pid))
+                        if self.debug:
+                            print('[Debug]Chrome process({}) exited indeed.'.format(pid))
             self.chrome_process = None
+            if self.vdisplay:
+                self.vdisplay.stop()
+            # Remove temporary user data directory
+            if self.temp_chrome_user_data_dir and os.path.exists(self.temp_chrome_user_data_dir):
+                shutil.rmtree(self.temp_chrome_user_data_dir)
+            # Remove temporary proxy extension directory
+            if self.proxy_extension_dir and os.path.exists(self.proxy_extension_dir):
+                shutil.rmtree(self.proxy_extension_dir)
         
     def exit(self):
         self.quit()
@@ -609,20 +726,20 @@ def test():
     def before_request_sent(request):
         """HTTP请求发出前 - 回调函数
         """
-        print('#' * 20 + ' REQUEST DATA FOR "{}" '.format(request.get('url')) + '#' * 20)
+        print('[Debug]#' * 20 + ' REQUEST DATA FOR "{}" '.format(request.get('url')) + '#' * 20)
         pprint.pprint(request)
-        print('#' * 80)
+        print('[Debug]#' * 80)
         
         
     def after_response_received(request, response, body):
         """HTTP应答接收到了 - 回调函数
         """
         url = request.get('url')
-        print('#' * 20 + ' RESPONSE DATA FOR "{}" '.format(url) + '#' * 20)
+        print('[Debug]#' * 20 + ' RESPONSE DATA FOR "{}" '.format(url) + '#' * 20)
         pprint.pprint(response)
-        print('RESPONSE BODY:')
+        print('[Debug]RESPONSE BODY:')
         print(body)
-        print('#' * 80)    
+        print('[Debug]#' * 80)    
         
     
     browser = Chrome(user_agent='KUNZHIPENG UA',
@@ -634,7 +751,7 @@ def test():
                     #  after_response_reveiced_callback=after_response_received,
                      debug=True)
     # 查看当前IP
-    print('查看当前IP')
+    print('[Debug]查看当前IP')
     browser.open('http://httpbin.org/ip')
     # 等待页面加载就绪
     browser.wait_for_text(text='"origin"', timeout=10)
@@ -644,7 +761,7 @@ def test():
     input('Press ENTER to continue.')
 
     # 查看UA
-    print('查看UA')
+    print('[Debug]查看UA')
     browser.open('http://proxies.site-digger.com/headers-view/')
     browser.wait_for_text(text='HTTP_USER_AGENT', timeout=10)
     browser.capture_to('chrome-ua.png')
@@ -653,7 +770,7 @@ def test():
     input('Press ENTER to continue.')
 
     # 查看Cookies
-    print('查看Cookies')
+    print('[Debug]查看Cookies')
     browser.open('http://httpbin.org/cookies/set?name=redice&sex=male')
     # 等待页面加载就绪
     browser.wait_for_text(text='"cookies"', timeout=10)
@@ -666,7 +783,7 @@ def test():
     input('Press ENTER to continue.')
 
     # 删除所有Cookies
-    print('删除所有Cookies，然后查看当前Cookies')
+    print('[Debug]删除所有Cookies，然后查看当前Cookies')
     browser.delete_cookies(alldomains=True)
     browser.open('http://httpbin.org/cookies')
     browser.wait_for_text(text='"cookies"', timeout=10)
@@ -674,7 +791,7 @@ def test():
     pprint.pprint(browser.cookies)
     input('Press ENTER to continue.')
 
-    print('导入Cookies，然后查看当前Cookies')
+    print('[Debug]导入Cookies，然后查看当前Cookies')
     # 导入Cookies
     browser.load_cookies('chrome_cookies.txt')
     browser.open('http://httpbin.org/cookies')
