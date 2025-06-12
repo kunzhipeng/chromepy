@@ -2,6 +2,7 @@
 
 from __future__ import unicode_literals
 
+import sys
 import os
 import json
 import logging
@@ -22,7 +23,15 @@ except ImportError:
 __all__ = ["Tab"]
 
 
+formatter = logging.Formatter(
+    fmt="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+ch = logging.StreamHandler()
+ch.setFormatter(formatter)
+logger.addHandler(ch)
 
 
 class GenericAttr(object):
@@ -48,10 +57,12 @@ class Tab(object):
     status_started = 'started'
     status_stopped = 'stopped'
 
-    def __init__(self, **kwargs):
+    def __init__(self, debug=False, **kwargs):
         self.id = kwargs.get("id")
         self.type = kwargs.get("type")
-        self.debug = os.getenv("DEBUG", False)
+        self.debug = debug
+        if self.debug:
+            logger.setLevel(logging.DEBUG)
 
         self._websocket_url = kwargs.get("webSocketDebuggerUrl")
         self._kwargs = kwargs
@@ -80,8 +91,7 @@ class Tab(object):
 
         message_json = json.dumps(message)
 
-        if self.debug:  # pragma: no cover
-            print("SEND > %s" % message_json)
+        logger.debug("SEND > %s" % message_json)
 
         if not isinstance(timeout, (int, float)) or timeout > 1:
             q_timeout = 1
@@ -120,7 +130,8 @@ class Tab(object):
                 message_json = self._ws.recv()
                 message = json.loads(message_json)
             except json.decoder.JSONDecodeError:
-                logger.error("Json message data is not valid json")
+                if message_json:
+                    logger.error("Json message data is not valid json: {}".format(message_json))
                 continue
             except websocket.WebSocketTimeoutException:
                 continue
@@ -130,8 +141,7 @@ class Tab(object):
                     self._stopped.set()
                 return
 
-            if self.debug:  # pragma: no cover
-                print('< RECV %s' % message_json)
+            logger.debug('< RECV %s' % message_json)
 
             if "method" in message:
                 self.event_queue.put(message)

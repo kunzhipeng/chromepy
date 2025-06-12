@@ -11,8 +11,9 @@ __all__ = ["Browser"]
 class Browser(object):
     _all_tabs = {}
 
-    def __init__(self, url="http://127.0.0.1:9222"):
+    def __init__(self, url="http://127.0.0.1:9222", debug=False):
         self.dev_url = url
+        self.debug = debug
 
         if self.dev_url not in self._all_tabs:
             self._tabs = self._all_tabs[self.dev_url] = {}
@@ -22,7 +23,7 @@ class Browser(object):
     def new_tab(self, url=None, timeout=None):
         url = url or ''
         rp = requests.put("%s/json/new?%s" % (self.dev_url, url), json=True, timeout=timeout)
-        tab = Tab(**rp.json())
+        tab = Tab(debug=self.debug, **rp.json())
         self._tabs[tab.id] = tab
         return tab
 
@@ -36,7 +37,7 @@ class Browser(object):
             if tab_json['id'] in self._tabs and self._tabs[tab_json['id']].status != Tab.status_stopped:
                 tabs_map[tab_json['id']] = self._tabs[tab_json['id']]
             else:
-                tabs_map[tab_json['id']] = Tab(**tab_json)
+                tabs_map[tab_json['id']] = Tab(debug=self.debug, **tab_json)
 
         self._tabs = tabs_map
         return list(self._tabs.values())

@@ -14,10 +14,21 @@ import psutil
 import tempfile
 import shutil
 import json
+import logging
 from urllib.parse import urlparse
 from signal import SIGTERM
 from contextlib import closing
 from . import cdp
+
+formatter = logging.Formatter(
+    fmt="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+ch = logging.StreamHandler()
+ch.setFormatter(formatter)
+logger.addHandler(ch)
 
 IS_LINUX = platform.system() == 'Linux'
 if IS_LINUX:
@@ -115,13 +126,15 @@ class Chrome:
         self.download_images = download_images
         self.start_position = start_position
         self.window_size = window_size
-        self.debug = debug or '--chromepy-debug' in sys.argv
+        self.debug = debug or '--chromepy-debug' in sys.argv or os.environ.get('CHROMEPY_DEBUG') == '1'
         self.cdpcli = None
         self.chrome_process = None
         self.vdisplay = None
         self.temp_chrome_user_data_dir = None
         self.dev_protocol_port = None
         self.requests_cache = {}
+        if self.debug:
+            logger.setLevel(logging.DEBUG)
         if proxy:
             m = re.compile(r'^([a-z\d]+)\://', re.IGNORECASE).search(proxy)
             if m:
@@ -144,9 +157,8 @@ class Chrome:
                 self.proxy_port = int(groups.get('port'))
                 self.proxy_url = '{}://{}:{}'.format(self.proxy_scheme, self.proxy_host, self.proxy_port)
             if self.proxy_username and self.proxy_password:
-                if self.debug:
-                    print('[Debug]proxy_username:', self.proxy_username)
-                    print('[Debug]proxy_password:', self.proxy_password)
+                logger.debug('proxy_username:', self.proxy_username)
+                logger.debug('proxy_password:', self.proxy_password)
         
         if not self.remote_url:
             # Not specify remoge_url, will start a chrome instance
@@ -155,8 +167,7 @@ class Chrome:
             if not self.chrome_path:
                 raise Exception('Can not find chrome binary file.')
             else:
-                if self.debug:
-                    print('[Debug]Use chrome binary file: "{}"'.format(self.chrome_path))
+                logger.debug('Use chrome binary file: "{}"'.format(self.chrome_path))
             
             # "Google Chrome Dev Protocol" listen port
             self.dev_protocol_port = self.pick_free_port()
@@ -165,79 +176,67 @@ class Chrome:
             
             # Some default arguments for chrome command line
             chrome_args = DEFAULT_CHROME_CMD_ARGS.copy()
-            if self.debug:
-                print('[Debug]Default chrome command line arguments: {}'.format(chrome_args))
+            logger.debug('Default chrome command line arguments: {}'.format(chrome_args))
             if self.extra_cmd_args:
                 for arg in self.extra_cmd_args:
                     if arg not in chrome_args:
                         chrome_args.append(arg)
-                        if self.debug:
-                            print('[Debug]Add extra chrome command line argument: {}'.format(arg))
+                        logger.debug('Add extra chrome command line argument: {}'.format(arg))
             #chrome_args.extend(['--remote-allow-origins=*', '--disable-web-security', '--disable-features=IsolateOrigins,site-per-process', '--disable-site-isolation-trials'])
             chrome_args.append('--remote-debugging-port={}'.format(self.dev_protocol_port))
             # Set proxy
             if self.proxy_url:
-                if self.debug:
-                    print('[Debug]Set proxy into {}'.format(self.proxy_url))
+                logger.debug('Set proxy into {}'.format(self.proxy_url))
                 chrome_args.append('--proxy-server="{}"'.format(self.proxy_url))
             # User-agent
             if self.user_agent:
-                if self.debug:
-                    print('[Debug]Set User-agent into "{}"'.format(self.user_agent))
+                logger.debug('Set User-agent into "{}"'.format(self.user_agent))
                 chrome_args.append('--user-agent="{}"'.format(self.user_agent))
             # # Chrome user data directory
             if self.chrome_user_data_dir:
-                if self.debug:
-                    print('[Debug]Set --user-data-dir into "{}"'.format(self.chrome_user_data_dir))
+                logger.debug('Set --user-data-dir into "{}"'.format(self.chrome_user_data_dir))
                 chrome_args.append('--user-data-dir="{}"'.format(self.chrome_user_data_dir))
             else:
                 self.temp_chrome_user_data_dir = os.path.normpath(tempfile.mkdtemp())
-                if self.debug:
-                    print('[Debug]Create a temporary user data directory: "{}"'.format(self.temp_chrome_user_data_dir))
+                logger.debug('Create a temporary user data directory: "{}"'.format(self.temp_chrome_user_data_dir))
                 chrome_args.append('--user-data-dir="{}"'.format(self.temp_chrome_user_data_dir))
 
             # Chrome profile
             if self.chrome_profile:
-                if self.debug:
-                    print('[Debug]Set --profile-directory into "{}"'.format(self.chrome_profile))
+                logger.debug('Set --profile-directory into "{}"'.format(self.chrome_profile))
                 chrome_args.append('--profile-directory="{}"'.format(self.chrome_profile))
             # Headless model
             if not self.display:
-                if self.debug:
-                    print('[Debug]Use headless model: --headless --no-sandbox --disable-gpu')
+                logger.debug('Use headless model: --headless --no-sandbox --disable-gpu')
                 chrome_args.append('--headless --no-sandbox --disable-gpu')
             # Start position
             if self.start_position:
-                if self.debug:
-                    print('[Debug]Set --window-position={},{}'.format(self.start_position[0], self.start_position[1]))
+                logger.debug('Set --window-position={},{}'.format(self.start_position[0], self.start_position[1]))
                 chrome_args.append('--window-position={},{}'.format(self.start_position[0], self.start_position[1]))
             # Start window size
             if self.window_size:
-                if self.debug:
-                    print('[Debug]Set --window-size={},{}'.format(self.window_size[0], self.window_size[1]))
+                logger.debug('Set --window-size={},{}'.format(self.window_size[0], self.window_size[1]))
                 chrome_args.append('--window-size={},{}'.format(self.window_size[0], self.window_size[1]))
 
             # Start chrome
             cmd = '"{}"'.format(self.chrome_path) + ' ' + ' '.join(chrome_args)
-            if self.debug:
-                print('[Debug]Full cmd for start chrome:', cmd)
+            logger.debug('Full cmd for start chrome: {}'.format(cmd))
             if IS_LINUX:
                 if not self.vdisplay:
-                    if self.debug:
-                        print('[Debug]Start Xvfb...')
+                    logger.debug('Start Xvfb...')
                     self.vdisplay = Xvfb(width=1920, height=1080, colordepth=24)
                     self.vdisplay.start()
             self.chrome_process = subprocess.Popen(cmd, env=os.environ.copy(), shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)         
         else:
             if not proxy:
-                print('[Debug]Since the chrome has started, the proxy parameter will be ignored.')
+                logger.debug('Since the chrome has started, the proxy parameter will be ignored.')
             m = re.compile(r'\:(\d+)').search(self.remote_url)
             if m:
                 self.dev_protocol_port = int(m.groups()[0])
 
         # Waitting for Chrome being ready
         num = 0
-        print('[Info]Waitting for Chrome CDP being ready...')
+        logger.info('Waitting for Chrome CDP being ready...')
         while True:
             if self.check_socket(host='127.0.0.1', port=self.dev_protocol_port):
                 break
@@ -250,7 +249,7 @@ class Chrome:
                     time.sleep(1)
 
         # create a cdp browser instance
-        self.cdpcli = cdp.Browser(url=self.remote_url)
+        self.cdpcli = cdp.Browser(url=self.remote_url, debug=self.debug)
         self.tab = None
 
     def pick_free_port(self):
@@ -266,12 +265,10 @@ class Chrome:
         """
         with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
             if sock.connect_ex((host, port)) == 0:
-                if self.debug:
-                    print("[Debug]Port {}:{} is open".format(host, port))
+                logger.debug("Port {}:{} is open".format(host, port))
                 return True
             else:
-                if self.debug:
-                    print("[Debug]Port {}:{} is not open".format(host, port))
+                logger.debug("Port {}:{} is not open".format(host, port))
                 return False
         
     def get_default_chrome_path(self):
@@ -305,8 +302,7 @@ class Chrome:
     def __request_intercepted(self, interceptionId, request, **kwargs):
         """Network.requestIntercepted Callback
         """
-        if self.debug:
-            print("[Debug]Intercepted request {}".format(request.get('url')))
+        logger.debug("Intercepted request {}".format(request.get('url')))
         headers = request.get('headers', {})
         if self.user_agent:
             # Change UA
@@ -323,8 +319,7 @@ class Chrome:
                                            'password': self.proxy_password}
                 )
             except Exception as e:
-                if self.debug:
-                    print('[Debug]Exception when call Network.continueInterceptedRequest: {}'.format(str(e)))
+                logger.debug('Exception when call Network.continueInterceptedRequest: {}'.format(str(e)))
         else:
             try:
                 self.tab.Network.continueInterceptedRequest(
@@ -332,16 +327,14 @@ class Chrome:
                     headers=headers
                 )
             except Exception as e:
-                if self.debug:
-                    print('[Debug]Exception when call Network.continueInterceptedRequest: {}'.format(str(e)))
+               logger.debug('Exception when call Network.continueInterceptedRequest: {}'.format(str(e)))
             
         
     def __request_will_be_sent(self, request, **kwargs):
         """Network.requestWillBeSent Callback
         """
         requestId = kwargs.get('requestId')
-        if self.debug:
-            print("[Debug]Will send request {}, requestId = {}".format(request.get('url'), requestId))
+        logger.debug("Will send request {}, requestId = {}".format(request.get('url'), requestId))
         self.requests_cache[requestId] = {'request': request, 'response': None}
         if self.before_request_sent_callback:
             self.before_request_sent_callback(request)
@@ -349,8 +342,7 @@ class Chrome:
     def __response_received(self, requestId, response, **kwargs):
         """Network.responseReceived Callback
         """      
-        if self.debug:
-            print("[Debug]Received response for {}, type = {}, requestId = {}".format(response.get('url'), kwargs.get('type'), requestId))
+        logger.debug("Received response for {}, type = {}, requestId = {}".format(response.get('url'), kwargs.get('type'), requestId))
         if self.after_response_reveiced_callback and kwargs.get('type') in ['Document', 'Script', 'XHR', 'Fetch']:
             if requestId in self.requests_cache:
                 self.requests_cache[requestId]['response'] = response
@@ -359,8 +351,7 @@ class Chrome:
     def __loading__finished(self, requestId, **kwargs):
         """Network.loadingFinished
         """
-        if self.debug:
-            print("[Debug]Loading finished for {}".format(requestId))
+        logger.debug("Loading finished for {}".format(requestId))
         
         if self.after_response_reveiced_callback:
             if requestId in self.requests_cache:
@@ -371,13 +362,11 @@ class Chrome:
                     if body_obj['base64Encoded']:
                         body_text = base64.decodestring(body_text)
                 except Exception as e:
-                    if self.debug:
-                        print('[Debug]Failed to get response body for "{}": {}'.format(request.get('url'), str(e)))
+                    logger.debug('Failed to get response body for "{}": {}'.format(request.get('url'), str(e)))
                     body_text = ''
                 self.after_response_reveiced_callback(request, response, body_text)
             else:
-                if self.debug:
-                    print('[Debug]Does not find related reponse data for requestId: {}'.format(requestId))
+                logger.debug('Does not find related reponse data for requestId: {}'.format(requestId))
              
 
     def get_tab(self):
@@ -394,8 +383,7 @@ class Chrome:
             self.tab.start()
             self.tab.Page.stopLoading()
             if self.proxy_username:
-                if self.debug:
-                    print('[Debug]Add Network.requestIntercepted callback')
+                logger.debug('Add Network.requestIntercepted callback')
                 # Need to add Proxy-Authorization credentials
                 self.tab.Network.requestIntercepted = self.__request_intercepted
                 # setRequestInterceptionEnabled has been removed, should use setRequestInterception now
@@ -410,13 +398,11 @@ class Chrome:
                 self.tab.Network.setBlockedURLs(urls=['*.jpg', '*.png', '*.gif', '*.woff'])
                 need_network_enabled = True
             if self.before_request_sent_callback or self.after_response_reveiced_callback:
-                if self.debug:
-                    print('[Debug]Add Network.requestWillBeSent callback')
+                logger.debug('Add Network.requestWillBeSent callback')
                 self.tab.Network.requestWillBeSent = self.__request_will_be_sent
                 need_network_enabled = True
             if self.after_response_reveiced_callback:
-                if self.debug:
-                    print('[Debug]Add Network.responseReceived callback')
+                logger.debug('Add Network.responseReceived callback')
                 self.tab.Network.responseReceived = self.__response_received
                 self.tab.Network.loadingFinished = self.__loading__finished
                 need_network_enabled = True
@@ -430,11 +416,14 @@ class Chrome:
             self.tab.Page.enable()            
         return self.tab
 
-    def open(self, url, timeout=30):
+    def open(self, url, slient=False, timeout=30):
         """Load url
         url: URL to load;
+        slient: Whether to print log;
+        timeout: An optional timeout.
         """
-        print('[Info]Loading {} ...'.format(url))
+        if not slient:
+            logger.info('Opening "{}"...'.format(url))
         if not self.tab:
             self.get_tab()
         self.tab.Page.navigate(url=url, _timeout=timeout)
@@ -594,6 +583,11 @@ class Chrome:
         """Duplicate of cookies()
         """
         return self.cookies
+    
+    def get_cookie_string(self):
+        """Returns all cookies as a string.
+        """
+        return self.evaluate(script="document.cookie")
 
     def delete_cookies(self, timeout=10):
         """Deletes all cookies.
@@ -625,8 +619,7 @@ class Chrome:
             try:
                 p = psutil.Process(self.chrome_process.pid)
             except psutil.NoSuchProcess:
-                if self.debug:
-                    print('[Debug]Process({}) does not exit.'.format(self.chrome_process.pid))
+                logger.debug('Process({}) does not exit.'.format(self.chrome_process.pid))
             else:
                 chrome_pids = []
                 for sub_p in p.children(recursive=True):
@@ -644,8 +637,7 @@ class Chrome:
                 self.close_all_tabs()
                 time.sleep(1)
             except Exception as e:
-                if self.debug:
-                    print('[Debug]Exception in close_all_tabs: {}'.format(str(e)))
+                logger.debug('Exception in close_all_tabs: {}'.format(str(e)))
             # Terminate the main chrome process
             self.chrome_process.terminate()
             self.chrome_process.wait()
@@ -655,12 +647,10 @@ class Chrome:
                 for pid in chrome_pids:
                     try:
                         p = psutil.Process(pid)
-                        if self.debug:
-                            print('[Debug]Killing process({}) {}.'.format(p.pid, p.name()))
+                        logger.debug('Killing process({}) {}.'.format(p.pid, p.name()))
                         p.send_signal(SIGTERM)                 
                     except psutil.NoSuchProcess:
-                        if self.debug:
-                            print('[Debug]Chrome process({}) exited indeed.'.format(pid))
+                        logger.debug('Chrome process({}) exited indeed.'.format(pid))
             self.chrome_process = None
             if self.vdisplay:
                 self.vdisplay.stop()
@@ -669,14 +659,13 @@ class Chrome:
                 try:
                     shutil.rmtree(self.temp_chrome_user_data_dir)
                 except Exception as e:
-                    print(e)
+                    logger.error(e)
         else:
             try:
                 self.close_all_tabs()
                 time.sleep(1)
             except Exception as e:
-                if self.debug:
-                    print('[Debug]Exception in close_all_tabs: {}'.format(str(e)))
+                logger.debug('Exception in close_all_tabs: {}'.format(str(e)))
         
     def exit(self):
         self.quit()

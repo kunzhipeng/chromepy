@@ -32,8 +32,10 @@ browser.close()
 
 ## 代理设置
 ```python
+
+proxy = 'http://test:123456@127.0.0.1:2030'
+# 注意：socks5代理不支持用户名密码认证，chrome原生不支持
 #proxy = 'socks5://127.0.0.1:2030'
-proxy = 'http://127.0.0.1:2030'
 
 # 启动浏览器
 browser = chrome.Chrome(proxy=proxy)
