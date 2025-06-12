@@ -1,28 +1,27 @@
-#! /usr/bin/env python
-# -*- coding: utf-8 -*-
+# coding: utf-8
 
 from __future__ import unicode_literals
 
 
-class PyChromeException(Exception):
+class CDPException(Exception):
     pass
 
 
-class UserAbortException(PyChromeException):
+class UserAbortException(CDPException):
     pass
 
 
-class TabConnectionException(PyChromeException):
+class TabConnectionException(CDPException):
     pass
 
 
-class CallMethodException(PyChromeException):
+class CallMethodException(CDPException):
     pass
 
 
-class TimeoutException(PyChromeException):
+class TimeoutException(CDPException):
     pass
 
 
-class RuntimeException(PyChromeException):
+class RuntimeException(CDPException):
     pass

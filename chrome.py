@@ -1,45 +1,62 @@
 # coding: utf-8
 # chrome.py
-# Use "Google Chrome Dev Protocol" to automate Chrome
-# https://chromedevtools.github.io/devtools-protocol/
+# Chrome automate with "Google Chrome Dev Protocol"(https://chromedevtools.github.io/devtools-protocol/)
 
+import sys
 import os
 import platform
 import re
 import time
 import socket
 import base64
-import pprint
 import subprocess
 import psutil
 import tempfile
 import shutil
+import json
+from urllib.parse import urlparse
 from signal import SIGTERM
 from contextlib import closing
-from http.cookiejar import Cookie, LWPCookieJar
 from . import cdp
 
-
 IS_LINUX = platform.system() == 'Linux'
+if IS_LINUX:
+    from xvfbwrapper import Xvfb
 
-def find_free_port():
-    """pick a free port number
-    """
-    with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
-        s.bind(('', 0))
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        return s.getsockname()[1]
-    
-def check_socket(host, port):
-    """Check if a port is open
-    """
-    with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
-        if sock.connect_ex((host, port)) == 0:
-            print("[Debug]Port {}:{} is open".format(host, port))
-            return True
-        else:
-            print("[Debug]Port {}:{} is not open".format(host, port))
-            return False
+# Default chrome command line arguments
+DEFAULT_CHROME_CMD_ARGS = [
+    '--remote-allow-origins=*',
+    '--no-first-run',
+    '--no-service-autorun',
+    '--disable-auto-reload',
+    '--no-default-browser-check',
+    '--homepage=about:blank',
+    '--no-pings',
+    '--wm-window-animations-disabled',
+    '--animation-duration-scale=0',
+    '--enable-privacy-sandbox-ads-apis',
+    '--safebrowsing-disable-download-protection',
+    '--simulate-outdated-no-au="Tue, 31 Dec 2099 23:59:59 GMT"',
+    '--password-store=basic',
+    '--deny-permission-prompts',
+    '--disable-infobars',
+    '--disable-breakpad',
+    '--disable-prompt-on-repost',
+    '--disable-password-generation',
+    '--disable-ipc-flooding-protection',
+    '--disable-background-timer-throttling',
+    '--disable-search-engine-choice-screen',
+    '--disable-backgrounding-occluded-windows',
+    '--disable-client-side-phishing-detection',
+    '--disable-top-sites',
+    '--disable-translate',
+    '--disable-renderer-backgrounding',
+    '--disable-background-networking',
+    '--disable-dev-shm-usage',
+    '--disable-features=IsolateOrigins,site-per-process,Translate,InsecureDownloadWarnings,DownloadBubble,DownloadBubbleV2,OptimizationTargetPrediction,OptimizationGuideModelDownloading,SidePanelPinning,UserAgentClientHint,PrivacySandboxSettings4,DisableLoadExtensionCommandLineSwitch',
+    '--disable-features=IsolateOrigins,site-per-process',
+    '--disable-session-crashed-bubble',
+    '--remote-debugging-host=127.0.0.1']
 
 class TimeoutError(Exception):
     """Raised when a request times out
@@ -85,7 +102,6 @@ class Chrome:
         self.proxy_port = None
         self.proxy_username = None
         self.proxy_password = None
-        self.proxy_extension_dir = None
         self.remote_url = remote_url
         self.user_agent = user_agent
         self.display = display
@@ -99,12 +115,13 @@ class Chrome:
         self.download_images = download_images
         self.start_position = start_position
         self.window_size = window_size
-        self.debug = debug
-        self.browser = None
+        self.debug = debug or '--chromepy-debug' in sys.argv
+        self.cdpcli = None
         self.chrome_process = None
         self.vdisplay = None
         self.temp_chrome_user_data_dir = None
-        self.requests = {}
+        self.dev_protocol_port = None
+        self.requests_cache = {}
         if proxy:
             m = re.compile(r'^([a-z\d]+)\://', re.IGNORECASE).search(proxy)
             if m:
@@ -126,9 +143,8 @@ class Chrome:
                 self.proxy_host = groups.get('host') 
                 self.proxy_port = int(groups.get('port'))
                 self.proxy_url = '{}://{}:{}'.format(self.proxy_scheme, self.proxy_host, self.proxy_port)
-            if self.debug:
-                print('[Debug]proxy_url:', self.proxy_url)
-                if self.proxy_username and self.proxy_password:
+            if self.proxy_username and self.proxy_password:
+                if self.debug:
                     print('[Debug]proxy_username:', self.proxy_username)
                     print('[Debug]proxy_password:', self.proxy_password)
         
@@ -143,64 +159,27 @@ class Chrome:
                     print('[Debug]Use chrome binary file: "{}"'.format(self.chrome_path))
             
             # "Google Chrome Dev Protocol" listen port
-            self.dev_protocol_port = find_free_port()
+            self.dev_protocol_port = self.pick_free_port()
             
             self.remote_url = 'http://127.0.0.1:{}'.format(self.dev_protocol_port)
             
             # Some default arguments for chrome command line
-            chrome_args = [
-                    '--remote-allow-origins=*',
-                    '--no-first-run',
-                    '--no-service-autorun',
-                    '--disable-auto-reload',
-                    '--no-default-browser-check',
-                    '--homepage=about:blank',
-                    '--no-pings',
-                    '--wm-window-animations-disabled',
-                    '--animation-duration-scale=0',
-                    '--enable-privacy-sandbox-ads-apis',
-                    '--safebrowsing-disable-download-protection',
-                    '--simulate-outdated-no-au="Tue, 31 Dec 2099 23:59:59 GMT"',
-                    '--password-store=basic',
-                    '--deny-permission-prompts',
-                    '--disable-infobars',
-                    '--disable-breakpad',
-                    '--disable-prompt-on-repost',
-                    '--disable-password-generation',
-                    '--disable-ipc-flooding-protection',
-                    '--disable-background-timer-throttling',
-                    '--disable-search-engine-choice-screen',
-                    '--disable-backgrounding-occluded-windows',
-                    '--disable-client-side-phishing-detection',
-                    '--disable-top-sites',
-                    '--disable-translate',
-                    '--disable-renderer-backgrounding',
-                    '--disable-background-networking',
-                    '--disable-dev-shm-usage',
-                    '--disable-features=IsolateOrigins,site-per-process,Translate,InsecureDownloadWarnings,DownloadBubble,DownloadBubbleV2,OptimizationTargetPrediction,OptimizationGuideModelDownloading,SidePanelPinning,UserAgentClientHint,PrivacySandboxSettings4,DisableLoadExtensionCommandLineSwitch',
-                    '--disable-features=IsolateOrigins,site-per-process',
-                    '--disable-session-crashed-bubble',
-                    '--remote-debugging-host=127.0.0.1']
+            chrome_args = DEFAULT_CHROME_CMD_ARGS.copy()
             if self.debug:
                 print('[Debug]Default chrome command line arguments: {}'.format(chrome_args))
             if self.extra_cmd_args:
-                if self.debug:
-                    print('[Debug]Add extra command line arguments: {}'.format(self.extra_cmd_args))
-                chrome_args.extend(self.extra_cmd_args)
+                for arg in self.extra_cmd_args:
+                    if arg not in chrome_args:
+                        chrome_args.append(arg)
+                        if self.debug:
+                            print('[Debug]Add extra chrome command line argument: {}'.format(arg))
             #chrome_args.extend(['--remote-allow-origins=*', '--disable-web-security', '--disable-features=IsolateOrigins,site-per-process', '--disable-site-isolation-trials'])
             chrome_args.append('--remote-debugging-port={}'.format(self.dev_protocol_port))
             # Set proxy
             if self.proxy_url:
-                if not self.proxy_username:
-                    if self.debug:
-                        print('[Debug]Set proxy into {}'.format(self.proxy_url))
-                    chrome_args.append('--proxy-server="{}"'.format(self.proxy_url))
-                else:
-                    # Create a proxy extension for proxy with authentication
-                    self.proxy_extension_dir = self.create_proxy_extension(scheme=self.proxy_scheme, host=self.proxy_host, port=self.proxy_port, username=self.proxy_username, password=self.proxy_password)
-                    if self.debug:
-                        print('[Debug]Create proxy extension directory: "{}"'.format(self.proxy_extension_dir))
-                    chrome_args.append('--load-extension={}'.format(os.path.abspath(self.proxy_extension_dir)))
+                if self.debug:
+                    print('[Debug]Set proxy into {}'.format(self.proxy_url))
+                chrome_args.append('--proxy-server="{}"'.format(self.proxy_url))
             # User-agent
             if self.user_agent:
                 if self.debug:
@@ -219,7 +198,6 @@ class Chrome:
 
             # Chrome profile
             if self.chrome_profile:
-                # Chrome default user profile directory: C:\Users\Administrator\AppData\Local\Google\Chrome\User Data\Default
                 if self.debug:
                     print('[Debug]Set --profile-directory into "{}"'.format(self.chrome_profile))
                 chrome_args.append('--profile-directory="{}"'.format(self.chrome_profile))
@@ -240,11 +218,10 @@ class Chrome:
                 chrome_args.append('--window-size={},{}'.format(self.window_size[0], self.window_size[1]))
 
             # Start chrome
-            cmd = self.chrome_path + ' ' + ' '.join(chrome_args)
+            cmd = '"{}"'.format(self.chrome_path) + ' ' + ' '.join(chrome_args)
             if self.debug:
                 print('[Debug]Full cmd for start chrome:', cmd)
             if IS_LINUX:
-                from xvfbwrapper import Xvfb
                 if not self.vdisplay:
                     if self.debug:
                         print('[Debug]Start Xvfb...')
@@ -260,8 +237,9 @@ class Chrome:
 
         # Waitting for Chrome being ready
         num = 0
+        print('[Info]Waitting for Chrome CDP being ready...')
         while True:
-            if check_socket(host='127.0.0.1', port=self.dev_protocol_port):
+            if self.check_socket(host='127.0.0.1', port=self.dev_protocol_port):
                 break
             else:
                 num += 1
@@ -271,9 +249,30 @@ class Chrome:
                 else:
                     time.sleep(1)
 
-        # create a browser instance
-        self.browser = cdp.Browser(url=self.remote_url)
+        # create a cdp browser instance
+        self.cdpcli = cdp.Browser(url=self.remote_url)
         self.tab = None
+
+    def pick_free_port(self):
+        """pick a free port number
+        """
+        with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
+            s.bind(('', 0))
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            return s.getsockname()[1]
+    
+    def check_socket(self, host, port):
+        """Check if a port is open
+        """
+        with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
+            if sock.connect_ex((host, port)) == 0:
+                if self.debug:
+                    print("[Debug]Port {}:{} is open".format(host, port))
+                return True
+            else:
+                if self.debug:
+                    print("[Debug]Port {}:{} is not open".format(host, port))
+                return False
         
     def get_default_chrome_path(self):
         """Get the realpath of chrome binary file
@@ -303,75 +302,38 @@ class Chrome:
             if os.path.exists(candidate) and os.access(candidate, os.X_OK):
                 return os.path.normpath(candidate)
             
-    def create_proxy_extension(self, scheme, host, port, username, password):
-        """ Create a proxy extension file.
+    def __request_intercepted(self, interceptionId, request, **kwargs):
+        """Network.requestIntercepted Callback
         """
-        manifest_json = """
-        {
-        "version": "1.0.0",
-        "manifest_version": 3,
-        "name": "Chrome Proxy",
-        "permissions": [
-            "proxy",
-            "tabs",
-            "unlimitedStorage",
-            "storage",
-            "webRequest",
-            "webRequestAuthProvider"
-        ],
-        "host_permissions": [
-            "<all_urls>"
-        ],
-        "background": {
-            "service_worker": "background.js"
-        },
-        "minimum_chrome_version":"88.0.0"
-        }
-        """
-
-        background_js = """
-        var config = {
-            mode: "fixed_servers",
-            rules: {
-                singleProxy: {
-                    scheme: "%s",
-                    host: "%s",
-                    port: %d
-                },
-                bypassList: ["localhost"]
-            }
-        };
-
-        chrome.proxy.settings.set({value: config, scope: "regular"}, function() {});
-
-        function callbackFn(details) {
-            return {
-                authCredentials: {
-                    username: "%s",
-                    password: "%s"
-                }
-            };
-        }
-
-        chrome.webRequest.onAuthRequired.addListener(
-            callbackFn,
-            { urls: ["<all_urls>"] },
-            ['blocking']
-        );
-        """ % (
-            scheme,
-            host,
-            port,
-            username,
-            password
-        )
-
-        proxy_extension_dir = tempfile.mkdtemp()
-        with open(os.path.join(proxy_extension_dir, "manifest.json"), "w") as f:
-            f.write(manifest_json)
-        with open(os.path.join(proxy_extension_dir, "background.js"), "w") as f:
-            f.write(background_js)
-        return proxy_extension_dir
+        if self.debug:
+            print("[Debug]Intercepted request {}".format(request.get('url')))
+        headers = request.get('headers', {})
+        if self.user_agent:
+            # Change UA
+            headers['User-Agent'] = self.user_agent
+        auth_challenge = kwargs.get('authChallenge')
+        if auth_challenge:
+            try:
+                # 30x redirect with http proxy auth
+                self.tab.Network.continueInterceptedRequest(
+                    interceptionId=interceptionId,
+                    headers=headers,
+                    authChallengeResponse={'response': 'ProvideCredentials', 
+                                           'username': self.proxy_username,
+                                           'password': self.proxy_password}
+                )
+            except Exception as e:
+                if self.debug:
+                    print('[Debug]Exception when call Network.continueInterceptedRequest: {}'.format(str(e)))
+        else:
+            try:
+                self.tab.Network.continueInterceptedRequest(
+                    interceptionId=interceptionId,
+                    headers=headers
+                )
+            except Exception as e:
+                if self.debug:
+                    print('[Debug]Exception when call Network.continueInterceptedRequest: {}'.format(str(e)))
             
         
     def __request_will_be_sent(self, request, **kwargs):
@@ -379,8 +341,8 @@ class Chrome:
         """
         requestId = kwargs.get('requestId')
         if self.debug:
-            print("Will send request {}, requestId = {}".format(request.get('url'), requestId))
-        self.requests[requestId] = {'request': request, 'response': None}
+            print("[Debug]Will send request {}, requestId = {}".format(request.get('url'), requestId))
+        self.requests_cache[requestId] = {'request': request, 'response': None}
         if self.before_request_sent_callback:
             self.before_request_sent_callback(request)
             
@@ -388,21 +350,21 @@ class Chrome:
         """Network.responseReceived Callback
         """      
         if self.debug:
-            print("Received response for {}, type = {}, requestId = {}".format(response.get('url'), kwargs.get('type'), requestId))
+            print("[Debug]Received response for {}, type = {}, requestId = {}".format(response.get('url'), kwargs.get('type'), requestId))
         if self.after_response_reveiced_callback and kwargs.get('type') in ['Document', 'Script', 'XHR', 'Fetch']:
-            if requestId in self.requests:
-                self.requests[requestId]['response'] = response
+            if requestId in self.requests_cache:
+                self.requests_cache[requestId]['response'] = response
            
             
     def __loading__finished(self, requestId, **kwargs):
         """Network.loadingFinished
         """
         if self.debug:
-            print("Loading finished for {}".format(requestId))
+            print("[Debug]Loading finished for {}".format(requestId))
         
         if self.after_response_reveiced_callback:
-            if requestId in self.requests:
-                request, response = self.requests[requestId]['request'], self.requests[requestId]['response']
+            if requestId in self.requests_cache:
+                request, response = self.requests_cache[requestId]['request'], self.requests_cache[requestId]['response']
                 try:
                     body_obj = self.tab.Network.getResponseBody(requestId=requestId)
                     body_text = body_obj['body']
@@ -419,19 +381,26 @@ class Chrome:
              
 
     def get_tab(self):
-        """Get firxt tab
+        """Get a tab. All operations are done on this tab.
         """
         if not self.tab:
             # https://chromedevtools.github.io/devtools-protocol/tot/Network
             need_network_enabled = False
-            tabs = self.browser.list_tab()
+            tabs = self.cdpcli.list_tab()
             if tabs:
                 self.tab = tabs[0]
             else:
-                self.tab = self.browser.new_tab()
+                self.tab = self.cdpcli.new_tab()
             self.tab.start()
             self.tab.Page.stopLoading()
-            self.tab.Extensions.loadUnpacked(path="F:/scrapers/test/tmp0unxbivn")
+            if self.proxy_username:
+                if self.debug:
+                    print('[Debug]Add Network.requestIntercepted callback')
+                # Need to add Proxy-Authorization credentials
+                self.tab.Network.requestIntercepted = self.__request_intercepted
+                # setRequestInterceptionEnabled has been removed, should use setRequestInterception now
+                self.tab.Network.setRequestInterception(patterns=[{"RequestPattern": '*'}])
+                need_network_enabled = True
             if self.user_agent:
                 # Set User-Agent header
                 self.tab.Network.setExtraHTTPHeaders(headers={'User-Agent': self.user_agent})
@@ -465,7 +434,7 @@ class Chrome:
         """Load url
         url: URL to load;
         """
-        print('[Debug]Loading {} ...'.format(url))
+        print('[Info]Loading {} ...'.format(url))
         if not self.tab:
             self.get_tab()
         self.tab.Page.navigate(url=url, _timeout=timeout)
@@ -473,7 +442,7 @@ class Chrome:
     def sleep(self, seconds):
         time.sleep(seconds)
         
-    def wait_for_text(self, text, timeout=60):
+    def wait_for_text(self, text, timeout=30):
         """Waits until given text appear on main frame.
         text: The text to wait for.
         timeout: An optional timeout.
@@ -486,7 +455,7 @@ class Chrome:
                 time.sleep(1)
         raise TimeoutError
     
-    def wait_for_any_text(self, texts, timeout=60):
+    def wait_for_any_text(self, texts, timeout=30):
         """Waits if any given text appear on main frame.
         texts: Any text to wait for.
         timeout: An optional timeout.
@@ -499,7 +468,7 @@ class Chrome:
             time.sleep(1)
         raise TimeoutError
     
-    def wait_for_all_text(self, texts, timeout=60):
+    def wait_for_all_text(self, texts, timeout=30):
         """Waits if all given text appear on main frame.
         texts: All texts to wait for.
         timeout: An optional timeout.
@@ -516,10 +485,10 @@ class Chrome:
                 time.sleep(1)
         raise TimeoutError
     
-    def capture_to(self, save_path):
+    def capture_to(self, save_path, timeout=10):
         """Save screenshot
         """
-        data = self.tab.Page.captureScreenshot()
+        data = self.tab.Page.captureScreenshot(_timeout=timeout)
         with open(save_path, "wb") as fd:
             fd.write(base64.b64decode(data['data']))     
         
@@ -530,76 +499,55 @@ class Chrome:
         if not self.tab:
             self.get_tab()
         js_result = self.tab.Runtime.evaluate(expression=script, _timeout=timeout)
-        if u'exceptionDetails' not in js_result and u'result' in js_result and u'value' in js_result[u'result']:
-            return js_result[u'result'][u'value']
+        if 'exceptionDetails' not in js_result and 'result' in js_result and 'value' in js_result['result']:
+            return js_result['result']['value']
 
     
-    def load_cookies(self, cookie_storage):
-        """load from Set-Cookie3 format text file.
-
-        cookie_storage: file location string on disk.
+    def load_cookies(self, cookie_storage="cookies.json"):
+        """load cookies from json file
         """
-        cj = LWPCookieJar(cookie_storage)
-        cj.load()
-        for cookie in cj:
-            self.tab.Network.setCookie(name=cookie.name, 
-                                     value=cookie.value, 
-                                     path=cookie.path, 
-                                     secure=cookie.secure, 
-                                     domain=cookie.domain,
-                                     expires=cookie.expires)
-
-        
-    def save_cookies(self, cookie_storage):
-        """Save to Set-Cookie3 format text file.
-
-        cookie_storage: file location string.
+        if os.path.exists(cookie_storage):
+            with open(cookie_storage, 'r', encoding='utf-8') as f:
+                json_text = f.read()
+                if json_text:
+                    for cookie in json.loads(json_text):
+                        self.add_cookie(cookie)
+                        
+    def add_cookie(self, cookie, timeout=10):
+        """Add a cookie.
         """
-        
-        def to_cookiejar_cookie(chrome_cookie):
-            port = None
-            port_specified = False
-            secure = chrome_cookie['secure']
-            name = chrome_cookie['name']
-            value = chrome_cookie['value']
-            v = chrome_cookie['path']
-            path_specified = bool(v != "")
-            path = v if path_specified else None
-            v = chrome_cookie['domain']
-            domain_specified = bool(v != "")
-            domain = v
-            if domain_specified:
-                domain_initial_dot = v.startswith('.')
-            else:
-                domain_initial_dot = None
-            v = int(chrome_cookie.get('expires') or 2147483647)
-            # Long type boundary on 32bit platfroms; avoid ValueError
-            expires = 2147483647 if v > 2147483647 or v == -1 else v
-            rest = {}
-            discard = False
-            return Cookie(
-                0,
-                name,
-                value,
-                port,
-                port_specified,
-                domain,
-                domain_specified,
-                domain_initial_dot,
-                path,
-                path_specified,
-                secure,
-                expires,
-                discard,
-                None,
-                None,
-                rest,
-            )
+        if not cookie.get('domain'):
+            current_domain = urlparse(self.get_current_url()).netloc
+            if current_domain:
+                cookie['domain'] = current_domain
+        args = cookie
+        args['_timeout'] = timeout
+        self.tab.Network.setCookie(**args)
 
-        cj = LWPCookieJar(cookie_storage)
-        for cookie in self.cookies:
-            cj.set_cookie(to_cookiejar_cookie(cookie))
-        cj.save()
+    def add_cookies(self, cookies):
+        """Add cookies.
+        """
+        for cookie in cookies:
+            self.add_cookie(cookie)
+        
+    def save_cookies(self, cookie_storage="cookies.json"):
+        """Save cookies into json file.
+        """
+        with open(cookie_storage, 'w', encoding='utf-8') as f:
+            f.write(json.dumps(self.cookies, ensure_ascii=False))
+
+    def refresh(self, ignore_cache=False, timeout=10):
+        """Refresh the current page.
+        ignore_cache: If true, browser cache is ignored (as if the user pressed Shift+refresh).
+        """
+        if not self.tab:
+            self.get_tab()
+        self.tab.Page.reload(ignoreCache=ignore_cache, _timeout=timeout)
+
+    def refresh_page(self, ignore_cache=False, timeout=10):
+        """Duplicate of refresh()
+        """
+        self.refresh(ignore_cache=ignore_cache, timeout=timeout)
         
     def get_page_html(self, expression=None, timeout=10):
         """Get current page HTML
@@ -608,15 +556,25 @@ class Chrome:
         if not self.tab:
             self.get_tab()
         js_result = self.tab.Runtime.evaluate(expression=(expression or "document.documentElement.outerHTML"), _timeout=timeout)
-        if u'exceptionDetails' not in js_result and u'result' in js_result and js_result[u'result'][u'type'] == u'string':
-            html = js_result[u'result'][u'value']
+        if 'exceptionDetails' not in js_result and 'result' in js_result and js_result['result']['type'] == 'string':
+            html = js_result['result']['value']
         return html    
     
     @property
     def content(self):
-        """Get current page HTML
+        """Duplicate of get_page_html()
         """
         return self.get_page_html(expression="document.documentElement.outerHTML")
+    
+    def get_page_source(self):
+        """Duplicate of get_page_html()
+        """
+        return self.content
+    
+    def get_current_url(self, timeout=10):
+        """Get current page url 
+        """
+        return self.evaluate('document.location.href', timeout=timeout)
     
     @property
     def title(self):
@@ -625,51 +583,55 @@ class Chrome:
         return self.evaluate(script="document.title")
     
     @property
-    def cookies(self):
+    def cookies(self, timeout=10):
         """Returns all cookies.
         """
         if not self.tab:
             self.get_tab()
-        return self.tab.Network.getCookies().get('cookies') or []
+        return self.tab.Network.getCookies(_timeout=timeout).get('cookies') or []
+    
+    def get_cookies(self):
+        """Duplicate of cookies()
+        """
+        return self.cookies
 
-    def delete_cookies(self, alldomains=False):
+    def delete_cookies(self, timeout=10):
         """Deletes all cookies.
         """
         if not self.tab:
             self.get_tab()
-        if alldomains:
-            # 删除所有域名的cookies
-            self.tab.Network.clearBrowserCookies()
-        else:
-            for cookie in self.cookies:
-                name = cookie['name']
-                domain = cookie['domain']
-                self.tab.Network.deleteCookies(name=name, domain=domain)
-        
+        # 删除所有的cookies
+        self.tab.Network.clearBrowserCookies(_timeout=timeout)
+
+    def delete_all_cookies(self):
+        """Duplicate of delete_cookies()
+        """
+        self.delete_cookies()
+
         
     def close_all_tabs(self):
         """Close all tabs, exit the chrome
         """
-        if self.browser:
-            for tab in self.browser.list_tab():
-                self.browser.close_tab(tab)
+        if self.cdpcli:
+            for tab in self.cdpcli.list_tab():
+                self.cdpcli.close_tab(tab)
             time.sleep(1)
-        self.requests.clear()
+        self.requests_cache.clear()
 
     def get_chrome_subpids(self):
         """获取chrome子进程ID
         """
-        chrome_pids = []
         if self.chrome_process:
             try:
                 p = psutil.Process(self.chrome_process.pid)
             except psutil.NoSuchProcess:
-                print('[Debug]Process({}) does not exit.'.format(self.chrome_process.pid))
+                if self.debug:
+                    print('[Debug]Process({}) does not exit.'.format(self.chrome_process.pid))
             else:
+                chrome_pids = []
                 for sub_p in p.children(recursive=True):
                     chrome_pids.append(sub_p.pid)
-        return chrome_pids
-
+                return chrome_pids
 
     def quit(self):
         """Close all tabs, exit the chrome
@@ -677,12 +639,14 @@ class Chrome:
         if self.chrome_process:
             # Get all subprocesses of chrome
             chrome_pids = self.get_chrome_subpids()
-    
-            # Terminate the main chrome process
+
             try:
                 self.close_all_tabs()
+                time.sleep(1)
             except Exception as e:
-                print(e)
+                if self.debug:
+                    print('[Debug]Exception in close_all_tabs: {}'.format(str(e)))
+            # Terminate the main chrome process
             self.chrome_process.terminate()
             self.chrome_process.wait()
             
@@ -702,10 +666,17 @@ class Chrome:
                 self.vdisplay.stop()
             # Remove temporary user data directory
             if self.temp_chrome_user_data_dir and os.path.exists(self.temp_chrome_user_data_dir):
-                shutil.rmtree(self.temp_chrome_user_data_dir)
-            # Remove temporary proxy extension directory
-            if self.proxy_extension_dir and os.path.exists(self.proxy_extension_dir):
-                shutil.rmtree(self.proxy_extension_dir)
+                try:
+                    shutil.rmtree(self.temp_chrome_user_data_dir)
+                except Exception as e:
+                    print(e)
+        else:
+            try:
+                self.close_all_tabs()
+                time.sleep(1)
+            except Exception as e:
+                if self.debug:
+                    print('[Debug]Exception in close_all_tabs: {}'.format(str(e)))
         
     def exit(self):
         self.quit()
@@ -718,89 +689,3 @@ class Chrome:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.exit()
-
-
-def test():
-    # 测试环境：Win7 + Chrome V69 和 Ubuntu + Chrome V73 均测试通过
-    
-    def before_request_sent(request):
-        """HTTP请求发出前 - 回调函数
-        """
-        print('[Debug]#' * 20 + ' REQUEST DATA FOR "{}" '.format(request.get('url')) + '#' * 20)
-        pprint.pprint(request)
-        print('[Debug]#' * 80)
-        
-        
-    def after_response_received(request, response, body):
-        """HTTP应答接收到了 - 回调函数
-        """
-        url = request.get('url')
-        print('[Debug]#' * 20 + ' RESPONSE DATA FOR "{}" '.format(url) + '#' * 20)
-        pprint.pprint(response)
-        print('[Debug]RESPONSE BODY:')
-        print(body)
-        print('[Debug]#' * 80)    
-        
-    
-    browser = Chrome(user_agent='KUNZHIPENG UA',
-                     proxy=None,
-                     download_images=True,
-                     display=True,
-                     chrome_profile='debug',
-                    #  before_request_sent_callback=before_request_sent,
-                    #  after_response_reveiced_callback=after_response_received,
-                     debug=True)
-    # 查看当前IP
-    print('[Debug]查看当前IP')
-    browser.open('http://httpbin.org/ip')
-    # 等待页面加载就绪
-    browser.wait_for_text(text='"origin"', timeout=10)
-    # 获取当前页面HTML
-    #print(browser.content)
-    browser.capture_to('chrome-ip.png')
-    input('Press ENTER to continue.')
-
-    # 查看UA
-    print('[Debug]查看UA')
-    browser.open('http://proxies.site-digger.com/headers-view/')
-    browser.wait_for_text(text='HTTP_USER_AGENT', timeout=10)
-    browser.capture_to('chrome-ua.png')
-    # 获取当前页面HTML
-    #print(browser.content)
-    input('Press ENTER to continue.')
-
-    # 查看Cookies
-    print('[Debug]查看Cookies')
-    browser.open('http://httpbin.org/cookies/set?name=redice&sex=male')
-    # 等待页面加载就绪
-    browser.wait_for_text(text='"cookies"', timeout=10)
-    # 获取当前页面HTML
-    #print(browser.content)  
-    # 打印当前Cookies
-    pprint.pprint(browser.cookies)
-    # 保存Cookies
-    browser.save_cookies('chrome_cookies.txt')
-    input('Press ENTER to continue.')
-
-    # 删除所有Cookies
-    print('[Debug]删除所有Cookies，然后查看当前Cookies')
-    browser.delete_cookies(alldomains=True)
-    browser.open('http://httpbin.org/cookies')
-    browser.wait_for_text(text='"cookies"', timeout=10)
-    # 打印当前Cookies
-    pprint.pprint(browser.cookies)
-    input('Press ENTER to continue.')
-
-    print('[Debug]导入Cookies，然后查看当前Cookies')
-    # 导入Cookies
-    browser.load_cookies('chrome_cookies.txt')
-    browser.open('http://httpbin.org/cookies')
-    browser.wait_for_text(text='"cookies"', timeout=10)
-    # 打印当前Cookies
-    pprint.pprint(browser.cookies)   
-
-    # 关闭浏览器
-    browser.quit()
-    
-if __name__ == '__main__':
-    test()

@@ -1,5 +1,4 @@
-#! /usr/bin/env python
-# -*- coding: utf-8 -*-
+# coding: utf-8
 
 from __future__ import unicode_literals
 
@@ -121,14 +120,13 @@ class Tab(object):
                 message_json = self._ws.recv()
                 message = json.loads(message_json)
             except json.decoder.JSONDecodeError:
-                if self.debug:
-                    print('Failed to parse json:', message_json)
+                logger.error("Json message data is not valid json")
                 continue
             except websocket.WebSocketTimeoutException:
                 continue
             except (websocket.WebSocketException, OSError):
                 if not self._stopped.is_set():
-                    logger.error("websocket exception", exc_info=True)
+                    logger.error("websocket exception")
                     self._stopped.set()
                 return
 

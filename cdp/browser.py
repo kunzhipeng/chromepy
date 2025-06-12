@@ -1,10 +1,7 @@
-#! /usr/bin/env python
-# -*- coding: utf-8 -*-
+# coding: utf-8
 
 from __future__ import unicode_literals
-
 import requests
-
 from .tab import Tab
 
 
