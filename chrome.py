@@ -135,6 +135,8 @@ class Chrome:
         self.requests_cache = {}
         if self.debug:
             logger.setLevel(logging.DEBUG)
+        else:
+            logger.setLevel(logging.INFO)
         if proxy:
             m = re.compile(r'^([a-z\d]+)\://', re.IGNORECASE).search(proxy)
             if m:
@@ -602,6 +604,19 @@ class Chrome:
         """
         self.delete_cookies()
 
+    def scroll_down(self, distance=300):
+        """Scroll page down, return the current scroll height.
+        """
+        if not self.tab:
+            self.get_tab()
+        self.tab.Input.synthesizeScrollGesture(
+            x=10, 
+            y=10, 
+            yDistance=-distance,  
+            yOverscroll=0,
+            xOverscroll=0,
+            speed=3000)
+        return self.evaluate('window.scrollY')
         
     def close_all_tabs(self):
         """Close all tabs, exit the chrome

@@ -2,8 +2,6 @@
 
 from __future__ import unicode_literals
 
-import sys
-import os
 import json
 import logging
 import warnings
@@ -90,8 +88,8 @@ class Tab(object):
             message['id'] = self._cur_id
 
         message_json = json.dumps(message)
-
-        logger.debug("SEND > %s" % message_json)
+        if self.debug:
+            logger.debug("SEND > %s" % message_json)
 
         if not isinstance(timeout, (int, float)) or timeout > 1:
             q_timeout = 1
@@ -141,7 +139,8 @@ class Tab(object):
                     self._stopped.set()
                 return
 
-            logger.debug('< RECV %s' % message_json)
+            if self.debug:
+                logger.debug('< RECV %s' % message_json)
 
             if "method" in message:
                 self.event_queue.put(message)
