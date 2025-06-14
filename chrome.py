@@ -227,8 +227,8 @@ class Chrome:
                 if not self.vdisplay:
                     logger.debug('Start Xvfb...')
                     self.vdisplay = Xvfb(width=1920, height=1080, colordepth=24)
-                    self.vdisplay.start()
-            self.chrome_process = subprocess.Popen(cmd, env=os.environ.copy(), shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)         
+                    self.vdisplay.start()   
+            self.chrome_process = subprocess.Popen(cmd, shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)     
         else:
             if not proxy:
                 logger.debug('Since the chrome has started, the proxy parameter will be ignored.')
