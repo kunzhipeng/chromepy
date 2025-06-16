@@ -428,7 +428,11 @@ class Chrome:
             logger.info('Opening "{}"...'.format(url))
         if not self.tab:
             self.get_tab()
-        self.tab.Page.navigate(url=url, _timeout=timeout)
+        try:
+            self.tab.Page.navigate(url=url, _timeout=timeout)
+        except cdp.TimeoutException:
+            raise TimeoutError('Timeout after loading page "{}" for more than {}s!'.format(url, timeout))
+
     
     def sleep(self, seconds):
         time.sleep(seconds)
@@ -539,7 +543,14 @@ class Chrome:
         """Duplicate of refresh()
         """
         self.refresh(ignore_cache=ignore_cache, timeout=timeout)
-        
+
+    def stop_loading(self, timeout=10):
+        """Force the page stop all navigations and pending resource fetches.
+        """
+        if not self.tab:
+            self.get_tab()
+        self.tab.Page.stopLoading(_timeout=timeout)
+
     def get_page_html(self, expression=None, timeout=10):
         """Get current page HTML
         """
@@ -549,7 +560,7 @@ class Chrome:
         js_result = self.tab.Runtime.evaluate(expression=(expression or "document.documentElement.outerHTML"), _timeout=timeout)
         if 'exceptionDetails' not in js_result and 'result' in js_result and js_result['result']['type'] == 'string':
             html = js_result['result']['value']
-        return html    
+        return html
     
     @property
     def content(self):
