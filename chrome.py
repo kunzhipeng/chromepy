@@ -77,6 +77,7 @@ class TimeoutError(Exception):
 class Chrome:
     def __init__(self, proxy=None, 
                  download_images=True,
+                 download_css=True,
                  user_agent=None, 
                  display=True,
                  chrome_path=None,
@@ -93,6 +94,7 @@ class Chrome:
         """Startup a chrome instance
         proxy: Proxy to use.
         download_images: Whether to download images.
+        download_css: Whether to download css files.
         load_timeout: Page load timeout(seconds).
         user_agent: Specify user-agent.
         display: A boolean that tells ghost to displays UI. Headless model. Chrome version >= 59.
@@ -124,6 +126,7 @@ class Chrome:
         self.after_response_reveiced_callback = after_response_reveiced_callback
         self.execution_context_created_callback = execution_context_created_callback
         self.download_images = download_images
+        self.download_css = download_css
         self.start_position = start_position
         self.window_size = window_size
         self.debug = debug or '--chromepy-debug' in sys.argv or os.environ.get('CHROMEPY_DEBUG') == '1'
@@ -395,9 +398,16 @@ class Chrome:
                 # Set User-Agent header
                 self.tab.Network.setExtraHTTPHeaders(headers={'User-Agent': self.user_agent})
                 need_network_enabled = True
+            urls_to_block = []
             if not self.download_images:
-                # Disable images
-                self.tab.Network.setBlockedURLs(urls=['*.jpg', '*.png', '*.gif', '*.woff'])
+                # Do not download images
+                urls_to_block.extend(['*.jpg', '*.png', '*.gif', '*.woff'])
+            if not self.download_css:
+                # Do not download css files
+                urls_to_block.extend(['*.css'])
+            if urls_to_block:
+                logger.debug('Set blocked urls: {}'.format(urls_to_block))
+                self.tab.Network.setBlockedURLs(urls=urls_to_block)
                 need_network_enabled = True
             if self.before_request_sent_callback or self.after_response_reveiced_callback:
                 logger.debug('Add Network.requestWillBeSent callback')
