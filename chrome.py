@@ -34,6 +34,18 @@ IS_LINUX = platform.system() == 'Linux'
 if IS_LINUX:
     from xvfbwrapper import Xvfb
 
+def is_running_in_docker():
+    """Check if the script is running in a Docker container
+    """
+    if os.path.exists("/.dockerenv"):
+        return True
+    try:
+        with open("/proc/1/cgroup", "rt") as f:
+            return "docker" in f.read() or "containerd" in f.read()
+    except Exception:
+        return False
+
+
 # Default chrome command line arguments
 DEFAULT_CHROME_CMD_ARGS = [
     '--remote-allow-origins=*',
@@ -176,6 +188,7 @@ class Chrome:
             
             # "Google Chrome Dev Protocol" listen port
             self.dev_protocol_port = self.pick_free_port()
+            logger.debug('"CDP" listen port: {}'.format(self.dev_protocol_port))
             
             self.remote_url = 'http://127.0.0.1:{}'.format(self.dev_protocol_port)
             
@@ -187,7 +200,9 @@ class Chrome:
                     if arg not in chrome_args:
                         chrome_args.append(arg)
                         logger.debug('Add extra chrome command line argument: {}'.format(arg))
-            #chrome_args.extend(['--remote-allow-origins=*', '--disable-web-security', '--disable-features=IsolateOrigins,site-per-process', '--disable-site-isolation-trials'])
+            if is_running_in_docker() and '--no-sandbox' not in chrome_args:
+                chrome_args.append('--no-sandbox')
+                logger.debug('Running in docker, Add "--no-sandbox" into chrome command line arguments')
             chrome_args.append('--remote-debugging-port={}'.format(self.dev_protocol_port))
             # Set proxy
             if self.proxy_url:
@@ -436,10 +451,8 @@ class Chrome:
         """
         if not slient:
             logger.info('Opening "{}"...'.format(url))
-        if not self.tab:
-            self.get_tab()
         try:
-            self.tab.Page.navigate(url=url, _timeout=timeout)
+            self.get_tab().Page.navigate(url=url, _timeout=timeout)
         except cdp.TimeoutException:
             raise TimeoutError('Timeout after loading page "{}" for more than {}s!'.format(url, timeout))
 
@@ -493,7 +506,7 @@ class Chrome:
     def capture_to(self, save_path, timeout=10):
         """Save screenshot
         """
-        data = self.tab.Page.captureScreenshot(_timeout=timeout)
+        data = self.get_tab().Page.captureScreenshot(_timeout=timeout)
         with open(save_path, "wb") as fd:
             fd.write(base64.b64decode(data['data']))     
         
@@ -501,9 +514,7 @@ class Chrome:
         """Evaluates script in page frame.
         script: The script to evaluate.
         """
-        if not self.tab:
-            self.get_tab()
-        js_result = self.tab.Runtime.evaluate(expression=script, _timeout=timeout)
+        js_result = self.get_tab().Runtime.evaluate(expression=script, _timeout=timeout)
         if 'exceptionDetails' not in js_result and 'result' in js_result and 'value' in js_result['result']:
             return js_result['result']['value']
 
@@ -527,7 +538,7 @@ class Chrome:
                 cookie['domain'] = current_domain
         args = cookie
         args['_timeout'] = timeout
-        self.tab.Network.setCookie(**args)
+        self.get_tab().Network.setCookie(**args)
 
     def add_cookies(self, cookies):
         """Add cookies.
@@ -545,9 +556,7 @@ class Chrome:
         """Refresh the current page.
         ignore_cache: If true, browser cache is ignored (as if the user pressed Shift+refresh).
         """
-        if not self.tab:
-            self.get_tab()
-        self.tab.Page.reload(ignoreCache=ignore_cache, _timeout=timeout)
+        self.get_tab().Page.reload(ignoreCache=ignore_cache, _timeout=timeout)
 
     def refresh_page(self, ignore_cache=False, timeout=10):
         """Duplicate of refresh()
@@ -557,17 +566,13 @@ class Chrome:
     def stop_loading(self, timeout=10):
         """Force the page stop all navigations and pending resource fetches.
         """
-        if not self.tab:
-            self.get_tab()
-        self.tab.Page.stopLoading(_timeout=timeout)
+        self.get_tab().Page.stopLoading(_timeout=timeout)
 
     def get_page_html(self, expression=None, timeout=10):
         """Get current page HTML
         """
         html = ''
-        if not self.tab:
-            self.get_tab()
-        js_result = self.tab.Runtime.evaluate(expression=(expression or "document.documentElement.outerHTML"), _timeout=timeout)
+        js_result = self.get_tab().Runtime.evaluate(expression=(expression or "document.documentElement.outerHTML"), _timeout=timeout)
         if 'exceptionDetails' not in js_result and 'result' in js_result and js_result['result']['type'] == 'string':
             html = js_result['result']['value']
         return html
@@ -598,9 +603,7 @@ class Chrome:
     def cookies(self, timeout=10):
         """Returns all cookies.
         """
-        if not self.tab:
-            self.get_tab()
-        return self.tab.Network.getCookies(_timeout=timeout).get('cookies') or []
+        return self.get_tab().Network.getCookies(_timeout=timeout).get('cookies') or []
     
     def get_cookies(self):
         """Duplicate of cookies()
@@ -615,10 +618,8 @@ class Chrome:
     def delete_cookies(self, timeout=10):
         """Deletes all cookies.
         """
-        if not self.tab:
-            self.get_tab()
         # 删除所有的cookies
-        self.tab.Network.clearBrowserCookies(_timeout=timeout)
+        self.get_tab().Network.clearBrowserCookies(_timeout=timeout)
 
     def delete_all_cookies(self):
         """Duplicate of delete_cookies()
@@ -628,9 +629,7 @@ class Chrome:
     def scroll_down(self, distance=300):
         """Scroll page down, return the current scroll height.
         """
-        if not self.tab:
-            self.get_tab()
-        self.tab.Input.synthesizeScrollGesture(
+        self.get_tab().Input.synthesizeScrollGesture(
             x=10, 
             y=10, 
             yDistance=-distance,  
@@ -638,7 +637,76 @@ class Chrome:
             xOverscroll=0,
             speed=3000)
         return self.evaluate('window.scrollY')
-        
+    
+    def get_window_info(self, timeout=10):
+        """Get windowId and bounds information of the window.
+        https://chromedevtools.github.io/devtools-protocol/tot/Browser/#method-getWindowForTarget
+        """
+        return self.get_tab().Browser.getWindowForTarget(_timeout=timeout)
+
+    def set_window_bounds(self, bounds, window_id=None, timeout=10):
+        """Set window bounds
+        https://chromedevtools.github.io/devtools-protocol/tot/Browser/#method-setWindowBounds
+        """
+        if not window_id:
+            window_id = self.get_window_info(timeout=timeout)['windowId']
+        self.get_tab().Browser.setWindowBounds(windowId=window_id, bounds=bounds, _timeout=timeout)
+
+    def max(self):
+        """Maximize the window.
+        """
+        info = self.get_window_info()
+        if info['bounds']['windowState'] in ('fullscreen', 'minimized'):
+            self.set_window_bounds(bounds={'windowState': 'normal'}, window_id=info['windowId'])
+        self.set_window_bounds(bounds={'windowState': 'maximized'}, window_id=info['windowId'])
+
+    def mini(self):
+        """Minimize the window.
+        """
+        info = self.get_window_info()
+        if info['bounds']['windowState'] == 'fullscreen':
+            self.set_window_bounds(bounds={'windowState': 'normal'}, window_id=info['windowId'])
+        self.set_window_bounds(bounds={'windowState': 'minimized'}, window_id=info['windowId'])
+
+    def full(self):
+        """Fullscreen the window.
+        """
+        info = self.get_window_info()
+        if info['bounds']['windowState'] == 'minimized':
+            self.set_window_bounds(bounds={'windowState': 'normal'}, window_id=info['windowId'])
+        self.set_window_bounds(bounds={'windowState': 'fullscreen'}, window_id=info['windowId'])
+
+    def normal(self):
+        """Normal the window.
+        """
+        info = self.get_window_info()
+        if info['bounds']['windowState'] == 'fullscreen':
+            self.set_window_bounds(bounds={'windowState': 'normal'}, window_id=info['windowId'])
+        self.set_window_bounds(bounds={'windowState': 'normal'}, window_id=info['windowId'])
+
+    def size(self, width=None, height=None):
+        """Set window size.
+        """
+        if width or height:
+            info = self.get_window_info()
+            if info['bounds']['windowState'] != 'normal':
+                self.set_window_bounds(bounds={'windowState': 'normal'}, window_id=info['windowId'])
+            width = width + 16 if width else info['bounds']['width']
+            height = height + 8 if height else info['bounds']['height']
+            self.set_window_bounds(bounds={'width': width, 'height': height}, window_id=info['windowId'])
+
+    def location(self, x=None, y=None):
+        """Set window location.
+        """
+        if x is not None or y is not None:
+            info = self.get_window_info()
+            if info['bounds']['windowState'] != 'normal':
+                self.set_window_bounds(bounds={'windowState': 'normal'}, window_id=info['windowId'])
+            x = x if x is not None else info['bounds']['left']
+            y = y if y is not None else info['bounds']['top']
+            self.set_window_bounds(bounds={'left': x - 8, 'top': y}, window_id=info['windowId'])
+
+
     def close_all_tabs(self):
         """Close all tabs, exit the chrome
         """
