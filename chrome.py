@@ -90,7 +90,8 @@ class Chrome:
     def __init__(self, proxy=None, 
                  download_images=True,
                  download_css=True,
-                 user_agent=None, 
+                 user_agent=None,
+                 accept_language=None,
                  display=True,
                  chrome_path=None,
                  chrome_user_data_dir=None,
@@ -102,13 +103,15 @@ class Chrome:
                  execution_context_created_callback=None,
                  start_position=(0, 0),
                  window_size=(1024, 768),
+                 save_iframe_execution_context=False,
                  debug=False):
         """Startup a chrome instance
         proxy: Proxy to use.
         download_images: Whether to download images.
         download_css: Whether to download css files.
         load_timeout: Page load timeout(seconds).
-        user_agent: Specify user-agent.
+        user_agent: Specify User-Agent.
+        accept_language: Specify Accept-Language.
         display: A boolean that tells ghost to displays UI. Headless model. Chrome version >= 59.
         chrome_path: Path of chrome binary file, if value is None will use default path.
         chrome_user_data_dir: To specify the user data directory(Storage location for custom configuration files, extensions, caches, and other data), will add the "--user-data-dir=..." parameter in chrome command line.
@@ -119,6 +122,7 @@ class Chrome:
         execution_context_created_callback: Fired when new execution context is created.
         start_position: The start window position.
         window_size: The start window size.
+        save_iframe_execution_context: Whether to save iframe execution context.
         debug: Print debug info if value is True. 
         """
         self.proxy_url = None
@@ -129,6 +133,7 @@ class Chrome:
         self.proxy_password = None
         self.remote_url = remote_url
         self.user_agent = user_agent
+        self.accept_language = accept_language
         self.display = display
         self.chrome_path = chrome_path
         self.chrome_user_data_dir = chrome_user_data_dir
@@ -141,6 +146,7 @@ class Chrome:
         self.download_css = download_css
         self.start_position = start_position
         self.window_size = window_size
+        self.save_iframe_execution_context = save_iframe_execution_context
         self.debug = debug or '--chromepy-debug' in sys.argv or os.environ.get('CHROMEPY_DEBUG') == '1'
         self.cdpcli = None
         self.chrome_process = None
@@ -148,6 +154,8 @@ class Chrome:
         self.temp_chrome_user_data_dir = None
         self.dev_protocol_port = None
         self.requests_cache = {}
+        # To save "frameId -> ExecutionContextId"
+        self.iframe_execution_contexts = {}
         if self.debug:
             logger.setLevel(logging.DEBUG)
         else:
@@ -208,10 +216,10 @@ class Chrome:
             if self.proxy_url:
                 logger.debug('Set proxy into {}'.format(self.proxy_url))
                 chrome_args.append('--proxy-server="{}"'.format(self.proxy_url))
-            # User-agent
-            if self.user_agent:
-                logger.debug('Set User-agent into "{}"'.format(self.user_agent))
-                chrome_args.append('--user-agent="{}"'.format(self.user_agent))
+            # # User-agent
+            # if self.user_agent:
+            #     logger.debug('Set User-agent into "{}"'.format(self.user_agent))
+            #     chrome_args.append('--user-agent="{}"'.format(self.user_agent))
             # # Chrome user data directory
             if self.chrome_user_data_dir:
                 logger.debug('Set --user-data-dir into "{}"'.format(self.chrome_user_data_dir))
@@ -324,9 +332,9 @@ class Chrome:
         """
         logger.debug("Intercepted request {}".format(request.get('url')))
         headers = request.get('headers', {})
-        if self.user_agent:
-            # Change UA
-            headers['User-Agent'] = self.user_agent
+        # if self.user_agent:
+        #     # Change UA
+        #     headers['User-Agent'] = self.user_agent
         auth_challenge = kwargs.get('authChallenge')
         if auth_challenge:
             try:
@@ -369,7 +377,7 @@ class Chrome:
            
             
     def __loading__finished(self, requestId, **kwargs):
-        """Network.loadingFinished
+        """Network.loadingFinished Callback
         """
         logger.debug("Loading finished for {}".format(requestId))
         
@@ -387,7 +395,18 @@ class Chrome:
                 self.after_response_reveiced_callback(request, response, body_text)
             else:
                 logger.debug('Does not find related reponse data for requestId: {}'.format(requestId))
-             
+
+    def __execution_context_created_callback(self, context):
+        """Runtime.executionContextCreated Callback
+        """
+        logger.debug('Runtime.executionContextCreated: {}'.format(context))
+        context_id = context['id']
+        aux_data = context.get('auxData', {})
+        if aux_data.get('frameId'):
+            self.iframe_execution_contexts[aux_data['frameId']] = context
+        if self.execution_context_created_callback:
+            self.execution_context_created_callback(context)
+
 
     def get_tab(self):
         """Get a tab. All operations are done on this tab.
@@ -409,10 +428,23 @@ class Chrome:
                 # setRequestInterceptionEnabled has been removed, should use setRequestInterception now
                 self.tab.Network.setRequestInterception(patterns=[{"RequestPattern": '*'}])
                 need_network_enabled = True
-            if self.user_agent:
+            if self.user_agent or self.accept_language:
                 # Set User-Agent header
-                self.tab.Network.setExtraHTTPHeaders(headers={'User-Agent': self.user_agent})
-                need_network_enabled = True
+                args = {}
+                if self.user_agent:
+                    logger.debug('Set user-agent: {}'.format(self.user_agent))
+                    args['userAgent'] = self.user_agent
+                else:
+                    # When call Emulation.setUserAgentOverride, "userAgent" parameter can not be empty, so use the default User-Agent value here
+                    self.tab.Runtime.enable()
+                    args['userAgent'] = self.tab.Runtime.evaluate(expression='navigator.userAgent')['result']['value']
+                if self.accept_language:
+                    logger.debug('Set accept-language: {}'.format(self.accept_language))
+                    args['acceptLanguage'] = self.accept_language
+                if args:
+                    # https://chromedevtools.github.io/devtools-protocol/tot/Emulation/#method-setUserAgentOverride
+                    self.tab.Emulation.setUserAgentOverride(**args)
+                    need_network_enabled = True
             urls_to_block = []
             if not self.download_images:
                 # Do not download images
@@ -435,27 +467,38 @@ class Chrome:
                 need_network_enabled = True
             if need_network_enabled:
                 self.tab.Network.enable()
-            if self.execution_context_created_callback:
-                self.tab.Runtime.executionContextCreated = self.execution_context_created_callback
+            if self.execution_context_created_callback or self.save_iframe_execution_context:
+                self.tab.Runtime.executionContextCreated = self.__execution_context_created_callback
                 # Enables reporting of execution contexts creation by means of executionContextCreated event. When the reporting gets enabled the event will be sent immediately for each existing execution context.
                 # https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-enable
                 self.tab.Runtime.enable()
-            self.tab.Page.enable()            
+            self.tab.Page.enable()
         return self.tab
 
-    def open(self, url, slient=False, timeout=30):
+    def open(self, url, headers=None, slient=False, timeout=30):
         """Load url
         url: URL to load;
         slient: Whether to print log;
         timeout: An optional timeout.
         """
+        self.iframe_execution_contexts.clear()
         if not slient:
             logger.info('Opening "{}"...'.format(url))
+        if headers:
+            # Add extra headers
+            self.set_extra_http_headers(headers=headers)
         try:
             self.get_tab().Page.navigate(url=url, _timeout=timeout)
         except cdp.TimeoutException:
             raise TimeoutError('Timeout after loading page "{}" for more than {}s!'.format(url, timeout))
-
+        
+    def set_extra_http_headers(self, headers={}):
+        """Set extra HTTP headers.
+        """
+        if headers:
+            logger.debug('Set extra HTTP headers: {}'.format(headers))
+            self.get_tab().Network.enable()
+            self.get_tab().Network.setExtraHTTPHeaders(headers=headers)
     
     def sleep(self, seconds):
         time.sleep(seconds)
@@ -510,11 +553,16 @@ class Chrome:
         with open(save_path, "wb") as fd:
             fd.write(base64.b64decode(data['data']))     
         
-    def evaluate(self, script, timeout=10):
+    def evaluate(self, script, context_id=None, timeout=10):
         """Evaluates script in page frame.
         script: The script to evaluate.
         """
-        js_result = self.get_tab().Runtime.evaluate(expression=script, _timeout=timeout)
+        args = {}
+        if context_id is not None:
+            args['contextId'] = context_id
+        args['expression'] = script
+        args['_timeout'] = timeout
+        js_result = self.get_tab().Runtime.evaluate(**args)
         if 'exceptionDetails' not in js_result and 'result' in js_result and 'value' in js_result['result']:
             return js_result['result']['value']
 

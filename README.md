@@ -44,7 +44,25 @@ proxy = 'http://test:123456@127.0.0.1:2030'
 browser = chrome.Chrome(proxy=proxy)
 ```
 
+## 设置User-Agent、Accept-Language
+
+`user_agent`参数用于设置User-Agent，`accept_language`参数用于设置Accept-Language。
+```python
+from chromepy import chrome
+
+# User-Agent设置为"kunzhipeng"，Accept-Language设置为"fr"（法语）
+browser = chrome.Chrome(user_agent='kunzhipeng', accept_language='fr')
+try:
+    # Mozilla 官网支持 90+ 种语言，会根据 Accept-Language 自动跳转。
+    browser.open('https://www.mozilla.org')
+    #browser.open('https://httpbin.org/headers')
+except chrome.TimeoutError:
+    print('Timeout!')
+```
+
+
 # 执行JS代码
+
 ```python
 from chromepy import chrome
 
@@ -122,18 +140,36 @@ input("Press Enter to close the browser and exit...")
 browser.close()
 ```
 
-## FAQ
 
-### 如何指定浏览器路径？
+## 如何指定浏览器路径？
 
 `chrome_path`参数可以用来指定chrome浏览器的路径，不指定的情况下默认使用系统默认的chrome浏览器。
 
-### 如何保持用户数据（使用固定的用户数据目录）？
+## 如何保持用户数据（使用固定的用户数据目录）？
 
 `chrome_user_data_dir`参数可以用来指定chrome浏览器的用户数据目录，默认不指定情况下，每次启动浏览器的时候创建临时的数据目录，关闭的时候自动删除该目录，无法保持用户数据。
 如果想要保持用户数据，可以通过`chrome_user_data_dir`指定一个固定的用户数据目录，需要使用绝对路径。
 
-### 如何判断页面是否加载完成？
+## 如何添加额外的http请求头？
+
+- 方法1：使用`set_extra_http_headers(headers)`，如下示例代码。
+- 方法2：在调用`open()`方法时，指定`headers'参数。
+
+```python
+# 设置额外的请求头
+from chromepy import chrome
+
+browser = chrome.Chrome()
+try:
+    browser.set_extra_http_headers(headers={'X-Test-Header': 'kunzhipeng'})
+    # 回显请求头
+    browser.open('https://httpbin.org/headers')
+except chrome.TimeoutError:
+    print('Timeout!')
+```
+
+
+## 如何判断页面是否加载完成？
 
 可以根据页面html内容是否包含指定的文本内容来判断页面是否加载完成。
 
@@ -142,7 +178,7 @@ browser.close()
 - `wait_for_all_text(texts, timeout=20)`：等待页面出现指定的所有文本（列表）内容，超时后抛出`TimeoutError`异常。
 - 也可以自己循环判断。
 
-### 如何向下滚动页面？
+## 如何向下滚动页面？
 `scroll_down(distance)`方法提供了向下滚动页面的功能，`distance`参数用于控制滚动的距离，返回值为`相对于页面顶端，窗口当前总共滚动了多少像素`(即window.scrollY)。
 如下示例，将一直（最多100次）向下滚动页面直至滚动条位置不再发生变化。
 
@@ -179,7 +215,7 @@ input("Press Enter to close the browser and exit...")
 browser.close()
 ```
 
-### 如何捕获HTTP请求、应答？
+## 如何捕获HTTP请求、应答？
 
 通过注册`before_request_sent_callback`和`after_response_reveiced_callback`回调函数，可以捕获HTTP请求、应答。
 
@@ -214,7 +250,7 @@ browser.sleep(10)
 browser.close()
 ```
 
-### 如何实现多线程（进程）？
+## 如何实现多线程（进程）？
 
 1. 默认情况下，Chrome浏览器使用固定的用户数据存储目录（例如，Windows下`~\AppData\Local\Chromium\User Data`, Linux下`~/.config/google-chrome`），所以只能启动一个Chrome浏览器实例。
 2. 可以通过`--user-data-dir`参数来指定用户数据存储目录，不同的Chrome浏览器实例使用不同的用户数据目录，从而实现同时启动多个Chrome浏览器实例。chromepy.Chrome现已添加`chrome_user_data_dir`参数来支持此功能，如下示例。当然，也可以像上面例子一样，通过`extra_cmd_args`参数来指定`--user-data-dir`参数来指定用户数据存储目录的路径。
@@ -228,13 +264,12 @@ from chromepy import chrome
 # 自定义的Chrome用户数据存储目录
 chrome_user_data_dir = os.path.join(os.getcwd(), 'chrome_user_data_dir')
 os.makedirs(chrome_user_data_dir, exist_ok=True)
-print('chrome_user_data_dir: {}'.format(chrome_user_data_dir))
 
 # 启动两个Chrome实例，每个实例使用不同的用户数据目录
-browser1 = chrome.Chrome(chrome_user_data_dir=os.path.join(chrome_user_data_dir, 'instance1'), chrome_profile='Default')
+browser1 = chrome.Chrome(chrome_user_data_dir=os.path.join(chrome_user_data_dir, 'instance1'))
 print('browser1.remote_url: {}'.format(browser1.remote_url))
 
-browser2 = chrome.Chrome(chrome_user_data_dir=os.path.join(chrome_user_data_dir, 'instance2'), chrome_profile='Default')
+browser2 = chrome.Chrome(chrome_user_data_dir=os.path.join(chrome_user_data_dir, 'instance2'))
 print('browser2.remote_url: {}'.format(browser2.remote_url))
 
 time.sleep(10)
@@ -244,4 +279,5 @@ browser2.quit()
 
 ### 如何实现在Chrome浏览器启动前清理掉历史的cookies和cache？
 
-创建chromepy.Chrome实例前，先删除掉对应的用户配置目录即可。
+- 如果未指定`chrome_user_data_dir`，每次启动浏览器的时候创建临时的数据目录，也就不存在有历史cookies和cache数据。
+- 如果指定了`chrome_user_data_dir`，创建`Chrome`实例前，先删掉（清空）对应的用户配置目录即可。
