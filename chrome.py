@@ -94,6 +94,7 @@ class Chrome:
                  accept_language=None,
                  display=True,
                  chrome_path=None,
+                 incognito=False,
                  chrome_user_data_dir=None,
                  chrome_profile=None,
                  extra_cmd_args=None,
@@ -114,6 +115,7 @@ class Chrome:
         accept_language: Specify Accept-Language.
         display: A boolean that tells ghost to displays UI. Headless model. Chrome version >= 59.
         chrome_path: Path of chrome binary file, if value is None will use default path.
+        incognito: Whether to use incognito mode.
         chrome_user_data_dir: To specify the user data directory(Storage location for custom configuration files, extensions, caches, and other data), will add the "--user-data-dir=..." parameter in chrome command line.
         chrome_profile: To specify the profile directoy, will add the "--profile-directory=..." parameter in chrome command line.
         extra_cmd_args: Extra arguments to be added into the chrome command line.
@@ -136,6 +138,7 @@ class Chrome:
         self.accept_language = accept_language
         self.display = display
         self.chrome_path = chrome_path
+        self.incognito = incognito
         self.chrome_user_data_dir = chrome_user_data_dir
         self.chrome_profile = chrome_profile
         self.extra_cmd_args = extra_cmd_args
@@ -208,6 +211,9 @@ class Chrome:
                     if arg not in chrome_args:
                         chrome_args.append(arg)
                         logger.debug('Add extra chrome command line argument: {}'.format(arg))
+            if self.incognito:
+                chrome_args.append('--incognito')
+                logger.debug('Add "--incognito" into chrome command line arguments')
             if is_running_in_docker() and '--no-sandbox' not in chrome_args:
                 chrome_args.append('--no-sandbox')
                 logger.debug('Running in docker, Add "--no-sandbox" into chrome command line arguments')
