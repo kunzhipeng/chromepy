@@ -101,8 +101,8 @@ class Chrome:
                  before_request_sent_callback=None,
                  after_response_reveiced_callback=None,
                  execution_context_created_callback=None,
-                 start_position=(0, 0),
-                 window_size=(1024, 768),
+                 start_position=None,
+                 window_size=None,
                  save_iframe_execution_context=False,
                  debug=False):
         """Startup a chrome instance
@@ -216,10 +216,10 @@ class Chrome:
             if self.proxy_url:
                 logger.debug('Set proxy into {}'.format(self.proxy_url))
                 chrome_args.append('--proxy-server="{}"'.format(self.proxy_url))
-            # # User-agent
-            # if self.user_agent:
-            #     logger.debug('Set User-agent into "{}"'.format(self.user_agent))
-            #     chrome_args.append('--user-agent="{}"'.format(self.user_agent))
+            # User-agent
+            if self.user_agent:
+                logger.debug('Set User-agent into "{}"'.format(self.user_agent))
+                chrome_args.append('--user-agent="{}"'.format(self.user_agent))
             # # Chrome user data directory
             if self.chrome_user_data_dir:
                 logger.debug('Set --user-data-dir into "{}"'.format(self.chrome_user_data_dir))
@@ -474,6 +474,13 @@ class Chrome:
                 self.tab.Runtime.enable()
             self.tab.Page.enable()
         return self.tab
+    
+    def add_init_script(self, script, timeout=10):
+        """Evaluates given script in every frame upon creation (before loading frame's scripts).
+        """
+        logger.debug('Add init script: {}'.format(script))
+        self.get_tab().Page.addScriptToEvaluateOnNewDocument(source=script, _timeout=timeout)
+
 
     def open(self, url, headers=None, slient=False, timeout=30):
         """Load url

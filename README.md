@@ -140,7 +140,6 @@ input("Press Enter to close the browser and exit...")
 browser.close()
 ```
 
-
 ## 如何指定浏览器路径？
 
 `chrome_path`参数可以用来指定chrome浏览器的路径，不指定的情况下默认使用系统默认的chrome浏览器。
@@ -215,6 +214,24 @@ input("Press Enter to close the browser and exit...")
 browser.close()
 ```
 
+## 如何设置浏览器窗口位置、大小？
+
+设置窗口位置：
+`browser.location(x, y)`
+
+设置窗口大小：
+`browser.size(width, height)` 单位为像素
+
+设置窗口最大化：
+`browser.max()` 
+
+设置窗口最小化：
+`browser.mini()` 
+
+将窗口恢复为普通状态：
+`browser.normal()` 
+
+
 ## 如何捕获HTTP请求、应答？
 
 通过注册`before_request_sent_callback`和`after_response_reveiced_callback`回调函数，可以捕获HTTP请求、应答。
@@ -252,30 +269,10 @@ browser.close()
 
 ## 如何实现多线程（进程）？
 
-1. 默认情况下，Chrome浏览器使用固定的用户数据存储目录（例如，Windows下`~\AppData\Local\Chromium\User Data`, Linux下`~/.config/google-chrome`），所以只能启动一个Chrome浏览器实例。
-2. 可以通过`--user-data-dir`参数来指定用户数据存储目录，不同的Chrome浏览器实例使用不同的用户数据目录，从而实现同时启动多个Chrome浏览器实例。chromepy.Chrome现已添加`chrome_user_data_dir`参数来支持此功能，如下示例。当然，也可以像上面例子一样，通过`extra_cmd_args`参数来指定`--user-data-dir`参数来指定用户数据存储目录的路径。
-3. 同一个用户数据目录下可以支持多个不同的用户配置目录，每个目录对应一个浏览器用户，默认的用户配置目录是`Default`（例如，Windows下`~\AppData\Local\Chromium\User Data\Default`, Linux下`~/.config/google-chrome/Default`）。chromepy.Chrome的`chrome_profile`参数可以用来指定具体使用哪个用户目录，不指定的情况下默认使用`Default`。当然，也可以向上面例子一样，通过`extra_cmd_args`参数来指定`--profile-directory`参数来指定用户配置目录（例如，`'--profile-directory="Profile1"'`）。
+默认即支持多线程。注意事项：
+1. 每个线程需要创建独立的`Chrome`实例。
+2. 不同的`Chrome`实例不能使用相同的用户数据存储目录`chrome_user_data_dir`，否则只能成功启动其中的一个。建议不指定`chrome_user_data_dir`参数，或者每个线程使用不同的`chrome_user_data_dir`值。
 
-```python
-import os
-import time
-from chromepy import chrome
-
-# 自定义的Chrome用户数据存储目录
-chrome_user_data_dir = os.path.join(os.getcwd(), 'chrome_user_data_dir')
-os.makedirs(chrome_user_data_dir, exist_ok=True)
-
-# 启动两个Chrome实例，每个实例使用不同的用户数据目录
-browser1 = chrome.Chrome(chrome_user_data_dir=os.path.join(chrome_user_data_dir, 'instance1'))
-print('browser1.remote_url: {}'.format(browser1.remote_url))
-
-browser2 = chrome.Chrome(chrome_user_data_dir=os.path.join(chrome_user_data_dir, 'instance2'))
-print('browser2.remote_url: {}'.format(browser2.remote_url))
-
-time.sleep(10)
-browser1.quit()
-browser2.quit()
-```
 
 ### 如何实现在Chrome浏览器启动前清理掉历史的cookies和cache？
 
