@@ -46,7 +46,7 @@ browser = chrome.Chrome(proxy=proxy)
 
 ## 设置User-Agent、Accept-Language
 
-`user_agent`参数用于设置User-Agent，`accept_language`参数用于设置Accept-Language。
+`Chrome`类的`user_agent`参数用于设置User-Agent，`accept_language`参数用于设置Accept-Language。
 ```python
 from chromepy import chrome
 
@@ -142,17 +142,17 @@ browser.close()
 
 ## 如何指定浏览器路径？
 
-`chrome_path`参数可以用来指定chrome浏览器的路径，不指定的情况下默认使用系统默认的chrome浏览器。
+`Chrome`类的`chrome_path`参数可以用来指定chrome浏览器的路径，不指定的情况下默认使用系统默认的chrome浏览器。
 
 ## 如何保持用户数据（使用固定的用户数据目录）？
 
-`chrome_user_data_dir`参数可以用来指定chrome浏览器的用户数据目录，默认不指定情况下，每次启动浏览器的时候创建临时的数据目录，关闭的时候自动删除该目录，无法保持用户数据。
+`Chrome`类的`chrome_user_data_dir`参数可以用来指定chrome浏览器的用户数据目录，默认不指定情况下，每次启动浏览器的时候创建临时的数据目录，关闭的时候自动删除该目录，无法保持用户数据。
 如果想要保持用户数据，可以通过`chrome_user_data_dir`指定一个固定的用户数据目录，需要使用绝对路径。
 
 ## 如何添加额外的http请求头？
 
-- 方法1：使用`set_extra_http_headers(headers)`，如下示例代码。
-- 方法2：在调用`open()`方法时，指定`headers'参数。
+- 方法1：使用`browser.set_extra_http_headers(headers)`，如下示例代码。
+- 方法2：在调用`browser.open(url, headers)`方法时，指定`headers'参数。
 
 ```python
 # 设置额外的请求头
@@ -172,13 +172,19 @@ except chrome.TimeoutError:
 
 可以根据页面html内容是否包含指定的文本内容来判断页面是否加载完成。
 
-- `wait_for_text(text, timeout=20)`：等待页面出现指定的文本内容，超时后抛出`TimeoutError`异常。
-- `wait_for_any_text(texts, timeout=20)`：等待页面出现指定的任意文本（列表）内容，超时后抛出`TimeoutError`异常。
-- `wait_for_all_text(texts, timeout=20)`：等待页面出现指定的所有文本（列表）内容，超时后抛出`TimeoutError`异常。
+- `browser.wait_for_text(text, timeout=20)`：等待页面出现指定的文本内容，超时后抛出`TimeoutError`异常。
+- `browser.wait_for_any_text(texts, timeout=20)`：等待页面出现指定的任意文本（列表）内容，超时后抛出`TimeoutError`异常。
+- `browser.wait_for_all_text(texts, timeout=20)`：等待页面出现指定的所有文本（列表）内容，超时后抛出`TimeoutError`异常。
 - 也可以自己循环判断。
 
+## 如何点击页面元素？
+- `browser.click(css_selector, scroll=True)`：点击指定的css选择器对应的元素。`scroll`参数为`True`时，点击元素前会先将元素滚动到页面可见区域。
+- `browser.click_xy(x, y)`：点击指定的坐标位置。注意：坐标位置是相对于浏览器视口的左上角(0,0)的。
+- 也可以通过执行js来实现。例如，`browser.evaluate('document.getElementById("su").click()')`。
+
+
 ## 如何向下滚动页面？
-`scroll_down(distance)`方法提供了向下滚动页面的功能，`distance`参数用于控制滚动的距离，返回值为`相对于页面顶端，窗口当前总共滚动了多少像素`(即window.scrollY)。
+`browser.scroll_down(distance)`方法提供了向下滚动页面的功能，`distance`参数用于控制滚动的距离。返回值为`相对于页面顶端，窗口当前总共滚动了多少像素`(即window.scrollY)。
 如下示例，将一直（最多100次）向下滚动页面直至滚动条位置不再发生变化。
 
 
