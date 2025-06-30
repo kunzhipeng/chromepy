@@ -699,6 +699,39 @@ class Chrome:
             speed=3000)
         return self.evaluate('window.scrollY')
     
+    
+    def click_xy(self, x, y, timeout=10):
+        """Click the point with x, y coordinates of the browser viewport.
+        x: X coordinate of the browser viewport.
+        y: Y coordinate of the browser viewport.
+        """
+        self.get_tab().Input.dispatchMouseEvent(type='mouseMoved', x=x, y=y, _timeout=timeout)
+        self.get_tab().Input.dispatchMouseEvent(type='mousePressed', x=x, y=y, button='left', clickCount=1, _timeout=timeout)
+        self.get_tab().Input.dispatchMouseEvent(type='mouseReleased', x=x, y=y, button='left', clickCount=1, _timeout=timeout)
+
+    
+    def click(self, css_selector, scroll=True, timeout=10):
+        """Click the item postioned by css selector
+        scroll: If True, scroll the element into the visible area first.
+        """
+        if scroll:
+            # Scroll the element into the visible area
+            js = f'''document.querySelector('{css_selector}').scrollIntoView();'''
+            self.evaluate(js, timeout=timeout)
+            time.sleep(0.3)
+        # Get the position of an element in the view
+        js = f'''JSON.stringify(document.querySelector('{css_selector}').getBoundingClientRect())'''
+        bounding_jsontext = self.evaluate(js, timeout=timeout)
+        if bounding_jsontext:
+            bounding_rect = json.loads(bounding_jsontext)
+            # Get the center position of the element
+            x = bounding_rect['x'] + bounding_rect['width'] / 2
+            y = bounding_rect['y'] + bounding_rect['height'] / 2
+            # Click the element
+            self.click_xy(x, y, timeout=timeout)
+        else:
+            logger.error(f'Element not found by selector: {css_selector}')
+    
     def get_window_info(self, timeout=10):
         """Get windowId and bounds information of the window.
         https://chromedevtools.github.io/devtools-protocol/tot/Browser/#method-getWindowForTarget
