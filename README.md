@@ -172,13 +172,51 @@ except chrome.TimeoutError:
 
 
 ## 如何判断页面是否加载完成？
-
-可以根据页面html内容是否包含指定的文本内容来判断页面是否加载完成。
+`browser.open(url)`打开某个页面时，会在浏览器开始导航后立即返回，并不会等待页面加载完成。
+可以根据页面html内容是否包含指定的文本内容来判断页面是否加载完成。`chromepy`提供了如下方法：
 
 - `browser.wait_for_text(text, timeout=20)`：等待页面出现指定的文本内容，超时后抛出`TimeoutError`异常。
 - `browser.wait_for_any_text(texts, timeout=20)`：等待页面出现指定的任意文本（列表）内容，超时后抛出`TimeoutError`异常。
 - `browser.wait_for_all_text(texts, timeout=20)`：等待页面出现指定的所有文本（列表）内容，超时后抛出`TimeoutError`异常。
 - 也可以自己循环判断。
+
+下面是一个详细的示例：
+```
+import re
+from chromepy import chrome
+
+# 启动浏览器
+browser = chrome.Chrome()
+
+# 访问指定URL
+try:
+    browser.open('http://bot.sannysoft.com/', timeout=10)
+except chrome.TimeoutError:
+    # 打开页面超时
+    print('Timeout to open the page!')
+else:
+    # 等待页面加载完成
+    try:
+        # 根据页面元素判断页面是否加载完成
+        browser.wait_for_text(text=re.compile(r'<td id="webgl-renderer"[^<>]*>.+</td>', re.IGNORECASE), timeout=5)
+    except chrome.TimeoutError:
+        print('Timeout to wait for the page ready!')
+    else:
+        print('The page is ready now!')
+        # 停止加载额外的资源
+        browser.stop_loading()
+
+    # 获取当前页面URL
+    print('Current url:', browser.get_current_url())
+
+    # 获取页面HTML
+    html = browser.content
+    print('Page HTML:', html)
+
+# 关闭浏览器
+input("Press Enter to close the browser and exit...")
+browser.close()
+```
 
 ## 如何点击页面元素？
 - `browser.click(css_selector, scroll=True)`：模拟鼠标点击指定的css选择器对应的元素，例如前面示例中的`browser.click(css_selector='#su')`。`scroll`参数为`True`时，点击元素前会先将元素滚动到页面可见区域。

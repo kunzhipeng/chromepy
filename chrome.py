@@ -515,15 +515,26 @@ class Chrome:
     
     def sleep(self, seconds):
         time.sleep(seconds)
+
+    def _text_in_html(self, text):
+        """Check if given text is in page html.
+        text: The text to check, support re.Pattern.
+        """
+        if isinstance(text, re.Pattern):
+            if text.search(self.content):
+                return True
+            return False
+        else:
+            return text in self.content
         
     def wait_for_text(self, text, timeout=30):
         """Waits until given text appear on main frame.
-        text: The text to wait for.
+        text: The text to wait for, support re.Pattern.
         timeout: An optional timeout.
         """
         start_time = time.time()
         while time.time() - start_time <= timeout:
-            if text in self.content:
+            if self._text_in_html(text):
                 return True
             else:
                 time.sleep(1)
@@ -531,27 +542,27 @@ class Chrome:
     
     def wait_for_any_text(self, texts, timeout=30):
         """Waits if any given text appear on main frame.
-        texts: Any text to wait for.
+        texts: Any text to wait for, support re.Pattern.
         timeout: An optional timeout.
         """
         start_time = time.time()
         while time.time() - start_time <= timeout:
             for _text in texts:
-                if _text in self.content:
+                if self._text_in_html(_text):
                     return True
             time.sleep(1)
         raise TimeoutError
     
     def wait_for_all_text(self, texts, timeout=30):
         """Waits if all given text appear on main frame.
-        texts: All texts to wait for.
+        texts: All texts to wait for, support re.Pattern.
         timeout: An optional timeout.
         """
         start_time = time.time()
         while time.time() - start_time <= timeout:
             all_existed = True
             for _text in texts:
-                if _text not in self.content:
+                if not self._text_in_html(_text):
                     all_existed = False
             if all_existed:
                 return True
