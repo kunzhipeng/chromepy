@@ -181,7 +181,7 @@ except chrome.TimeoutError:
 - 也可以自己循环判断。
 
 下面是一个详细的示例：
-```
+```python
 import re
 from chromepy import chrome
 
