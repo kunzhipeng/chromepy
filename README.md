@@ -171,11 +171,11 @@ except chrome.TimeoutError:
 ```
 
 
-## 如何判断页面是否加载完成？
+## 如何判断页面加载是否完成（完整）？
 `browser.open(url)`打开某个页面时，会在浏览器开始导航后立即返回，并不会等待页面加载完成。
-可以根据页面html内容是否包含指定的文本内容来判断页面是否加载完成。`chromepy`提供了如下方法：
+可以根据页面html内容是否包含指定的内容来判断页面是否加载完成（完整）。`chromepy`提供了如下方法：
 
-- `browser.wait_for_text(text, timeout=20)`：等待页面出现指定的文本内容，超时后抛出`TimeoutError`异常。
+- `browser.wait_for_text(text, timeout=20)`：等待页面出现指定的文本内容，超时后抛出`TimeoutError`异常。`text`参数支持正则表达式`re.Pattern`类型。
 - `browser.wait_for_any_text(texts, timeout=20)`：等待页面出现指定的任意文本（列表）内容，超时后抛出`TimeoutError`异常。
 - `browser.wait_for_all_text(texts, timeout=20)`：等待页面出现指定的所有文本（列表）内容，超时后抛出`TimeoutError`异常。
 - 也可以自己循环判断。
@@ -200,8 +200,10 @@ else:
         # 根据页面元素判断页面是否加载完成
         browser.wait_for_text(text=re.compile(r'<td id="webgl-renderer"[^<>]*>.+</td>', re.IGNORECASE), timeout=5)
     except chrome.TimeoutError:
+        # timeout时间内页面没有加载完成
         print('Timeout to wait for the page ready!')
     else:
+        # 页面加载完成
         print('The page is ready now!')
         # 停止加载额外的资源
         browser.stop_loading()
