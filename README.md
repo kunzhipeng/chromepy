@@ -6,7 +6,8 @@
 
 1. 基于CDP协议控制浏览器，不依赖于webdriver，不易被检测。
 2. 支持带用户名密码认证的HTTP代理，不借助插件。 注意：不支持带用户名密码认证的socks5代理。
-3. 支持Linux无显示环境，使用Xvfb虚拟显示，而非headless模式，不容易被检测。
+3. 支持多线程，可以在同一台机器上同时启动多个浏览器实例（每个实例使用不同的用户数据目录）。
+4. 支持Linux无显示环境，使用Xvfb虚拟显示，而非headless模式，不容易被检测。
 
 ## 基本用法
 
@@ -77,8 +78,10 @@ browser.wait_for_text('id="kw"')
 # 执行js - 实现填入关键词
 browser.evaluate('document.getElementById("kw").value = "西安鲲之鹏"')
 browser.sleep(1)
-# 执行js -实现点击搜索
+# "点击搜索"方法一：通过执行js实现
 browser.evaluate('document.getElementById("su").click()')
+# "点击搜索"方法二：通过模拟鼠标操作实现
+# browser.click(css_selector='#su')
 
 # 关闭浏览器
 input("Press Enter to close the browser and exit...")
@@ -178,8 +181,8 @@ except chrome.TimeoutError:
 - 也可以自己循环判断。
 
 ## 如何点击页面元素？
-- `browser.click(css_selector, scroll=True)`：点击指定的css选择器对应的元素。`scroll`参数为`True`时，点击元素前会先将元素滚动到页面可见区域。
-- `browser.click_xy(x, y)`：点击指定的坐标位置。注意：坐标位置是相对于浏览器视口的左上角(0,0)的。
+- `browser.click(css_selector, scroll=True)`：模拟鼠标点击指定的css选择器对应的元素，例如前面示例中的`browser.click(css_selector='#su')`。`scroll`参数为`True`时，点击元素前会先将元素滚动到页面可见区域。
+- `browser.click_xy(x, y)`：模拟鼠标点击指定的坐标位置。注意：这里的(x, y)坐标位置是相对于浏览器视口的左上角(0,0)的。
 - 也可以通过执行js来实现。例如，`browser.evaluate('document.getElementById("su").click()')`。
 
 
