@@ -710,6 +710,15 @@ class Chrome:
         """
         return '; '.join([f'{cookie["name"]}={cookie["value"]}' for cookie in self.cookies])
     
+    def get_requests_cookiejar(self):
+        """Returns all cookies as a RequestsCookieJar
+        """
+        from requests.cookies import RequestsCookieJar
+        jar = RequestsCookieJar()
+        for cookie in self.cookies:
+            jar.set(cookie['name'], cookie['value'], domain=cookie['domain'], path=cookie['path'])
+        return jar
+    
     def get_js_cookie(self):
         """Returns JS `document.cookie`
         """
