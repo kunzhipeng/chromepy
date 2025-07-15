@@ -48,6 +48,7 @@ browser = chrome.Chrome(proxy=proxy)
 ## 设置User-Agent、Accept-Language
 
 `Chrome`类的`user_agent`参数用于设置User-Agent，`accept_language`参数用于设置Accept-Language。
+
 ```python
 from chromepy import chrome
 
@@ -60,7 +61,6 @@ try:
 except chrome.TimeoutError:
     print('Timeout!')
 ```
-
 
 # 执行JS代码
 
@@ -89,6 +89,76 @@ browser.close()
 ```
 
 ## Cookie相关操作
+
+### `browser.cookies`或`browser.get_cookies()`
+
+以列表形式返回当前页面Cookies，每一项是一个字典，包含`name, value, domain, path, secure`等信息，详见如下示例。
+```json
+[
+    {
+        "domain": "wedocs.unep.org",
+        "expires": -1,
+        "httpOnly": false,
+        "name": "ApplicationGatewayAffinityCORS",
+        "path": "/",
+        "priority": "Medium",
+        "sameParty": false,
+        "sameSite": "None",
+        "secure": true,
+        "session": true,
+        "size": 62,
+        "sourcePort": 443,
+        "sourceScheme": "Secure",
+        "value": "bb0bf2915cce855b07d1ae1be3a4ee95"
+    },
+    {
+        "domain": ".unep.org",
+        "expires": 1787115506.893437,
+        "httpOnly": false,
+        "name": "_ga",
+        "path": "/",
+        "priority": "Medium",
+        "sameParty": false,
+        "secure": false,
+        "session": false,
+        "size": 29,
+        "sourcePort": 443,
+        "sourceScheme": "Secure",
+        "value": "GA1.2.551494340.1752287800"
+    },
+...
+]
+```
+
+### `browser.get_cookies_dict()`
+
+以字典形式返回当前页面的Cookies。
+
+### `browser.get_cookies_string()`
+
+以字符串`name=value; ...`形式返回当前页面的Cookies。
+
+### `browser.get_js_cookie()`
+
+获取JS`document.cookie`的值,返回字符串类型。注意：`document.cookie`只能获取到到当前页面域名下的cookie，不能跨域。
+
+### `browser.add_cookie(cookie)`  
+
+向当前页面添加一个Cookie，`cookie`为字典类型，包含`name, value, domain, path, secure`等信息，其中`name`和`value`是必须项；
+
+### `browser.add_cookies([cookie, ...])`
+
+向当前页面添加多个Cookies；
+
+### `browser.save_cookies(cookie_storage)`
+
+将当前页面的Cookies以JSON格式保存到`cookie_storage`文件中；
+
+### `browser.load_cookies(cookie_storage)`
+
+从`cookie_storage`文件(JSON格式)中加载Cookies到当前页面；
+
+详细示例如下：
 
 ```python
 import json
@@ -170,8 +240,8 @@ except chrome.TimeoutError:
     print('Timeout!')
 ```
 
-
 ## 如何判断页面加载是否完成（完整）？
+
 `browser.open(url)`打开某个页面时，会在浏览器开始导航后立即返回，并不会等待页面加载完成。
 可以根据页面html内容是否包含指定的内容来判断页面是否加载完成（完整）。`chromepy`提供了如下方法：
 
@@ -181,6 +251,7 @@ except chrome.TimeoutError:
 - 也可以自己循环判断。
 
 下面是一个详细的示例：
+
 ```python
 import re
 from chromepy import chrome
@@ -221,15 +292,15 @@ browser.close()
 ```
 
 ## 如何点击页面元素？
+
 - `browser.click(css_selector, scroll=True)`：模拟鼠标点击指定的css选择器对应的元素，例如前面示例中的`browser.click(css_selector='#su')`。`scroll`参数为`True`时，点击元素前会先将元素滚动到页面可见区域。
 - `browser.click_xy(x, y)`：模拟鼠标点击指定的坐标位置。注意：这里的(x, y)坐标位置是相对于浏览器视口的左上角(0,0)的。
 - 也可以通过执行js来实现。例如，`browser.evaluate('document.getElementById("su").click()')`。
 
-
 ## 如何向下滚动页面？
+
 `browser.scroll_down(distance)`方法提供了向下滚动页面的功能，`distance`参数用于控制滚动的距离。返回值为`相对于页面顶端，窗口当前总共滚动了多少像素`(即window.scrollY)。
 如下示例，将一直（最多100次）向下滚动页面直至滚动条位置不再发生变化。
-
 
 ```python
 import os
@@ -272,14 +343,13 @@ browser.close()
 `browser.size(width, height)` 单位为像素
 
 设置窗口最大化：
-`browser.max()` 
+`browser.max()`
 
 设置窗口最小化：
-`browser.mini()` 
+`browser.mini()`
 
 将窗口恢复为普通状态：
-`browser.normal()` 
-
+`browser.normal()`
 
 ## 如何捕获HTTP请求、应答？
 
@@ -319,9 +389,9 @@ browser.close()
 ## 如何实现多线程（进程）？
 
 默认即支持多线程。注意事项：
+
 1. 每个线程需要创建独立的`Chrome`实例。
 2. 不同的`Chrome`实例不能使用相同的用户数据存储目录`chrome_user_data_dir`，否则只能成功启动其中的一个。建议不指定`chrome_user_data_dir`参数，或者每个线程使用不同的`chrome_user_data_dir`值。
-
 
 ### 如何实现在Chrome浏览器启动前清理掉历史的cookies和cache？
 
