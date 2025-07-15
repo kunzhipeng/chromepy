@@ -575,7 +575,13 @@ class Chrome:
         """
         data = self.get_tab().Page.captureScreenshot(_timeout=timeout)
         with open(save_path, "wb") as fd:
-            fd.write(base64.b64decode(data['data']))     
+            fd.write(base64.b64decode(data['data']))
+
+    def save_screenshot(self, save_path, timeout=10):
+        """Duplicate of capture_to()
+        """
+        self.capture_to(save_path, timeout=timeout)
+
         
     def evaluate(self, script, context_id=None, timeout=10):
         """Evaluates script in page frame.
@@ -644,9 +650,13 @@ class Chrome:
         """Get current page HTML
         """
         html = ''
-        js_result = self.get_tab().Runtime.evaluate(expression=(expression or "document.documentElement.outerHTML"), _timeout=timeout)
-        if 'exceptionDetails' not in js_result and 'result' in js_result and js_result['result']['type'] == 'string':
-            html = js_result['result']['value']
+        try:
+            js_result = self.get_tab().Runtime.evaluate(expression=(expression or "document.documentElement.outerHTML"), _timeout=timeout)
+        except cdp.TimeoutException:
+            logger.error('Timeout to get page HTML')
+        else:
+            if 'exceptionDetails' not in js_result and 'result' in js_result and js_result['result']['type'] == 'string':
+                html = js_result['result']['value']
         return html
     
     @property
@@ -665,6 +675,11 @@ class Chrome:
         """
         return self.evaluate('document.location.href', timeout=timeout)
     
+    def get_user_agent(self, timeout=10):
+        """Get current user-agent
+        """
+        return self.evaluate('navigator.userAgent', timeout=timeout)
+    
     @property
     def title(self):
         """Get current page title
@@ -673,7 +688,7 @@ class Chrome:
     
     @property
     def cookies(self, timeout=10):
-        """Returns all cookies.
+        """Returns all cookies as a List
         """
         return self.get_tab().Network.getCookies(_timeout=timeout).get('cookies') or []
     
@@ -682,8 +697,21 @@ class Chrome:
         """
         return self.cookies
     
-    def get_cookie_string(self):
-        """Returns all cookies as a string.
+    def get_cookies_dict(self):
+        """Returns all cookies as a Dict
+        """
+        cookies = {}
+        for cookie in self.cookies:
+            cookies[cookie['name']] = cookie['value']
+        return cookies
+    
+    def get_cookies_string(self):
+        """Returns all cookies as a String
+        """
+        return '; '.join([f'{cookie["name"]}={cookie["value"]}' for cookie in self.cookies])
+    
+    def get_js_cookie(self):
+        """Returns JS `document.cookie`
         """
         return self.evaluate(script="document.cookie")
 
