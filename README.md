@@ -9,6 +9,19 @@
 3. 支持多线程，可以在同一台机器上同时启动多个浏览器实例（每个实例使用不同的用户数据目录）。
 4. 支持Linux无显示环境，使用Xvfb虚拟显示，而非headless模式，不容易被检测。
 
+
+## 安装
+适用于Python 3.9及以上版本。
+
+1. 克隆当前项目到本地。
+2. 安装依赖库：`pip install psutil websocket`。
+3. 若果是在Linux下运行，还需要安装`xvfb`程序以及`xvfbwrapper`库。
+```bash
+# 以Ubuntu为例
+sudo apt-get install  xvfb
+pip install xvfbwrapper
+```
+
 ## 基本用法
 
 ```python
@@ -32,6 +45,7 @@ print('Page HTML:', html)
 input("Press Enter to close the browser and exit...")
 browser.close()
 ```
+
 
 ## 代理设置
 
@@ -215,7 +229,7 @@ browser.close()
 
 ## 如何指定浏览器路径？
 
-`Chrome`类的`chrome_path`参数可以用来指定chrome浏览器的路径，不指定的情况下默认使用系统默认的chrome浏览器。
+`Chrome`类的`chrome_path`参数可以用来指定chrome浏览器的可执行文件(例如chrome.exe)路径，不指定的情况下使用系统默认的chrome浏览器。
 
 ## 如何保持用户数据（使用固定的用户数据目录）？
 
