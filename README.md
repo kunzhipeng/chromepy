@@ -152,6 +152,15 @@ browser.close()
 
 以字符串`name=value; ...`形式返回当前页面的Cookies。
 
+### `browser.get_requests_cookiejar()`
+
+以`RequestsCookieJar`类型形式返回当前页面的Cookies。拿到这个jar之后，我们可以将其作为`cookies`参数传递给`requests`库的get或post方法，进行直接的HTTP交互。
+这种方式通常用来过网站防护（例如CF），流程如下：
+1. 浏览器打开目标网站，等待验证通过，可能还需要借助`browser.click_xy(x,y)`点击复选框来通过验证。
+2. 然后通过`browser.get_requests_cookiejar()`获取到的浏览器的Cookies（假设叫做`jar`）。
+3. 使用`requests`发送HTTP请求（`request.get(url, cookies=jar, ...)`）进行更高效的采集。需要注意的是`User-Agent`需要保持和浏览器的一致。
+4. 如果再次出现验证（一般是403错误），跳转到步骤1。
+
 ### `browser.get_js_cookie()`
 
 获取JS`document.cookie`的值,返回字符串类型。注意：`document.cookie`只能获取到到当前页面域名下的cookie，不能跨域。
