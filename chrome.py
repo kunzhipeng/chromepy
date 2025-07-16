@@ -755,16 +755,20 @@ class Chrome:
         modifiers: Modifier keys.
         timeout: Timeout in seconds.
         """
+        text = ''
+        if key == 'Enter':
+            text = '\r'
         for _type in ['keyDown', 'keyUp']:
             self.get_tab().Input.dispatchKeyEvent(type=_type,
                 key=key,
                 code=code or key.upper(),
                 windowsVirtualKeyCode=key_code or ord(key),
-                nativeVirtualKeyCode=key_code or ord(key),
+                #nativeVirtualKeyCode=key_code or ord(key),
                 modifiers=modifiers,
+                text=text,
                 _timeout=timeout
             )
-    
+     
     def insert_text(self, text, timeout=10):
         """Insert text into the current input element.
         text: Text to insert.
