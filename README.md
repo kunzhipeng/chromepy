@@ -1,6 +1,6 @@
 # chromepy
 
-基于`Google Chrome Dev Protocol`协议实现对Chrome浏览器的控制。
+基于`Google Chrome Dev Protocol(CDP)`协议实现对Chrome浏览器的控制，主要用于Web数据抓取。
 
 ## 特色
 
@@ -76,31 +76,6 @@ except chrome.TimeoutError:
     print('Timeout!')
 ```
 
-# 执行JS代码
-
-```python
-from chromepy import chrome
-
-# 打开百度首页，输入关键词"西安鲲之鹏"，然后点击""
-# 启动浏览器
-browser = chrome.Chrome(proxy=proxy)
-
-# 访问指定URL
-browser.open('https://www.baidu.com')
-browser.wait_for_text('id="kw"')
-
-# 执行js - 实现填入关键词
-browser.evaluate('document.getElementById("kw").value = "西安鲲之鹏"')
-browser.sleep(1)
-# "点击搜索"方法一：通过执行js实现
-browser.evaluate('document.getElementById("su").click()')
-# "点击搜索"方法二：通过模拟鼠标操作实现
-# browser.click(css_selector='#su')
-
-# 关闭浏览器
-input("Press Enter to close the browser and exit...")
-browser.close()
-```
 
 ## Cookie相关操作
 
@@ -236,31 +211,31 @@ input("Press Enter to close the browser and exit...")
 browser.close()
 ```
 
-## 如何指定浏览器路径？
 
-`Chrome`类的`chrome_path`参数可以用来指定chrome浏览器的可执行文件(例如chrome.exe)路径，不指定的情况下使用系统默认的chrome浏览器。
-
-## 如何保持用户数据（使用固定的用户数据目录）？
-
-`Chrome`类的`chrome_user_data_dir`参数可以用来指定chrome浏览器的用户数据目录，默认不指定情况下，每次启动浏览器的时候创建临时的数据目录，关闭的时候自动删除该目录，无法保持用户数据。
-如果想要保持用户数据，可以通过`chrome_user_data_dir`指定一个固定的用户数据目录，需要使用绝对路径。
-
-## 如何添加额外的http请求头？
-
-- 方法1：使用`browser.set_extra_http_headers(headers)`，如下示例代码。
-- 方法2：在调用`browser.open(url, headers)`方法时，指定`headers'参数。
+# 执行JS代码
 
 ```python
-# 设置额外的请求头
 from chromepy import chrome
 
-browser = chrome.Chrome()
-try:
-    browser.set_extra_http_headers(headers={'X-Test-Header': 'kunzhipeng'})
-    # 回显请求头
-    browser.open('https://httpbin.org/headers')
-except chrome.TimeoutError:
-    print('Timeout!')
+# 打开百度首页，输入关键词"西安鲲之鹏"，然后点击"搜索"按钮
+# 启动浏览器
+browser = chrome.Chrome(proxy=proxy)
+
+# 访问指定URL
+browser.open('https://www.baidu.com')
+browser.wait_for_text('id="kw"')
+
+# 执行js - 实现填入关键词
+browser.evaluate('document.getElementById("kw").value = "西安鲲之鹏"')
+browser.sleep(1)
+# "点击搜索"方法一：通过执行js实现
+browser.evaluate('document.getElementById("su").click()')
+# "点击搜索"方法二：通过模拟鼠标操作实现
+# browser.click(css_selector='#su')
+
+# 关闭浏览器
+input("Press Enter to close the browser and exit...")
+browser.close()
 ```
 
 ## 如何判断页面加载是否完成（完整）？
@@ -320,6 +295,25 @@ browser.close()
 - `browser.click_xy(x, y)`：模拟鼠标点击指定的坐标位置。注意：这里的(x, y)坐标位置是相对于浏览器视口的左上角(0,0)的。
 - 也可以通过执行js来实现。例如，`browser.evaluate('document.getElementById("su").click()')`。
 
+## 如何模拟键盘输入
+
+### 模拟按键事件
+`browser.dispatch_key(key, code, key_code, modifiers)`用于发送按键事件。例如：
+- `browser.dispatch_key(key='\t', code='Tab')`模拟按下并松开 Tab 键。
+- `browser.dispatch_key(key='\r', code='Enter')` 模拟按下并松开 Enter（回车）键。
+- `browser.dispatch_key(key=' ', code='Space')` 模拟按下并松开 空格键。
+- `browser.dispatch_key(key='\b', code='Backspace')` 模拟按下并松开 Backspace（退格）键。
+- `browser.dispatch_key(key='\x1b', code='Escape', key_code=27)` 模拟按下并松开 Escape（Esc）键。
+- `browser.dispatch_key(key='a', code='KeyA')` 模拟输入字符 a。
+- `browser.dispatch_key(key='A', code='KeyA', modifiers=8)` 模拟输入字符 A（按住 Shift）。
+- `browser.dispatch_key(key='0', code='Digit0')` 模拟输入数字 0。
+- `browser.dispatch_key(key='ArrowUp', code='ArrowUp', key_code=38)` 模拟按下 ↑ 上方向键。
+- `browser.dispatch_key(key='a', code='KeyA', modifiers=2)` 模拟 Ctrl+A（modifiers=2 为 Ctrl）。
+
+### 输入文本
+`browser.insert_text(text)`方法可以用来输入文本。例如：`browser.insert_text('西安鲲之鹏')`
+
+
 ## 如何向下滚动页面？
 
 `browser.scroll_down(distance)`方法提供了向下滚动页面的功能，`distance`参数用于控制滚动的距离。返回值为`相对于页面顶端，窗口当前总共滚动了多少像素`(即window.scrollY)。
@@ -373,6 +367,34 @@ browser.close()
 
 将窗口恢复为普通状态：
 `browser.normal()`
+
+
+## 如何指定浏览器路径？
+
+`Chrome`类的`chrome_path`参数可以用来指定chrome浏览器的可执行文件(例如chrome.exe)路径，不指定的情况下使用系统默认的chrome浏览器。
+
+## 如何保持用户数据（使用固定的用户数据目录）？
+
+`Chrome`类的`chrome_user_data_dir`参数可以用来指定chrome浏览器的用户数据目录，默认不指定情况下，每次启动浏览器的时候创建临时的数据目录，关闭的时候自动删除该目录，无法保持用户数据。
+如果想要保持用户数据，可以通过`chrome_user_data_dir`指定一个固定的用户数据目录，需要使用绝对路径。
+
+## 如何添加额外的http请求头？
+
+- 方法1：使用`browser.set_extra_http_headers(headers)`，如下示例代码。
+- 方法2：在调用`browser.open(url, headers)`方法时，指定`headers'参数。
+
+```python
+# 设置额外的请求头
+from chromepy import chrome
+
+browser = chrome.Chrome()
+try:
+    browser.set_extra_http_headers(headers={'X-Test-Header': 'kunzhipeng'})
+    # 回显请求头
+    browser.open('https://httpbin.org/headers')
+except chrome.TimeoutError:
+    print('Timeout!')
+```
 
 ## 如何捕获HTTP请求、应答？
 
