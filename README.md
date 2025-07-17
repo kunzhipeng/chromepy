@@ -9,13 +9,14 @@
 3. 支持多线程，可以在同一台机器上同时启动多个浏览器实例（每个实例使用不同的用户数据目录）。
 4. 支持Linux无显示环境，使用Xvfb虚拟显示，而非headless模式，不容易被检测。
 
-
 ## 安装
+
 适用于Python 3.9及以上版本。
 
 1. 克隆当前项目到本地。
 2. 安装依赖库：`pip install psutil websocket`。
 3. 若果是在Linux下运行，还需要安装`xvfb`程序以及`xvfbwrapper`库。
+
 ```bash
 # 以Ubuntu为例
 sudo apt-get install  xvfb
@@ -46,7 +47,6 @@ input("Press Enter to close the browser and exit...")
 browser.close()
 ```
 
-
 ## 代理设置
 
 ```python
@@ -76,12 +76,12 @@ except chrome.TimeoutError:
     print('Timeout!')
 ```
 
-
 ## Cookie相关操作
 
 ### `browser.cookies`或`browser.get_cookies()`
 
 以列表形式返回当前页面Cookies，每一项是一个字典，包含`name, value, domain, path, secure`等信息，详见如下示例。
+
 ```json
 [
     {
@@ -131,6 +131,7 @@ except chrome.TimeoutError:
 
 以`RequestsCookieJar`类型形式返回当前页面的Cookies。拿到这个jar之后，我们可以将其作为`cookies`参数传递给`requests`库的get或post方法，进行直接的HTTP交互。
 这种方式通常用来过网站防护（例如CF），流程如下：
+
 1. 浏览器打开目标网站，等待验证通过，可能还需要借助`browser.click_xy(x,y)`点击复选框来通过验证。
 2. 然后通过`browser.get_requests_cookiejar()`获取到的浏览器的Cookies（假设叫做`jar`）。
 3. 使用`requests`发送HTTP请求（`request.get(url, cookies=jar, ...)`）进行更高效的采集。需要注意的是`User-Agent`需要保持和浏览器的一致。
@@ -140,7 +141,7 @@ except chrome.TimeoutError:
 
 获取JS`document.cookie`的值,返回字符串类型。注意：`document.cookie`只能获取到到当前页面域名下的cookie，不能跨域。
 
-### `browser.add_cookie(cookie)`  
+### `browser.add_cookie(cookie)`
 
 向当前页面添加一个Cookie，`cookie`为字典类型，包含`name, value, domain, path, secure`等信息，其中`name`和`value`是必须项；
 
@@ -210,7 +211,6 @@ print('Cookies:', json.dumps(browser.get_cookies(), ensure_ascii=False, indent=4
 input("Press Enter to close the browser and exit...")
 browser.close()
 ```
-
 
 # 执行JS代码
 
@@ -295,24 +295,57 @@ browser.close()
 - `browser.click_xy(x, y)`：模拟鼠标点击指定的坐标位置。注意：这里的(x, y)坐标位置是相对于浏览器视口的左上角(0,0)的。
 - 也可以通过执行js来实现。例如，`browser.evaluate('document.getElementById("su").click()')`。
 
-## 如何模拟键盘输入
+## 如何模拟键盘事件？
 
-### 模拟按键事件
-`browser.dispatch_key(key, code, key_code, modifiers)`用于发送按键事件。例如：
-- `browser.dispatch_key(key='\t', code='Tab')`模拟按下并松开 Tab 键。
-- `browser.dispatch_key(key='\r', code='Enter')` 模拟按下并松开 Enter（回车）键。
-- `browser.dispatch_key(key=' ', code='Space')` 模拟按下并松开 空格键。
-- `browser.dispatch_key(key='\b', code='Backspace')` 模拟按下并松开 Backspace（退格）键。
-- `browser.dispatch_key(key='\x1b', code='Escape', key_code=27)` 模拟按下并松开 Escape（Esc）键。
-- `browser.dispatch_key(key='a', code='KeyA')` 模拟输入字符 a。
-- `browser.dispatch_key(key='A', code='KeyA', modifiers=8)` 模拟输入字符 A（按住 Shift）。
-- `browser.dispatch_key(key='0', code='Digit0')` 模拟输入数字 0。
-- `browser.dispatch_key(key='ArrowUp', code='ArrowUp', key_code=38)` 模拟按下 ↑ 上方向键。
-- `browser.dispatch_key(key='a', code='KeyA', modifiers=2)` 模拟 Ctrl+A（modifiers=2 为 Ctrl）。
+`browser.dispatch_key(key, code, key_code, modifiers=0)`用于发送按键事件。
 
-### 输入文本
-`browser.insert_text(text)`方法可以用来输入文本。例如：`browser.insert_text('西安鲲之鹏')`
+示例：
 
+- `browser.dispatch_key(key='\t', code='Tab', key_code=9)`模拟按`Tab`键。
+- `browser.dispatch_key(key='Enter', code='Enter', key_code=13)` 模拟按`Enter（回车）`键。
+- `browser.dispatch_key(key=' ', code='Space', key_code=32)` 模拟按`空格`键。
+- `browser.dispatch_key(key='Backspace', code='Backspace', key_code=8)` 模拟按`Backspace（退格）`键。
+- `browser.dispatch_key(key='Escape', code='Escape', key_code=27)` 模拟按`Escape（Esc）`键。
+- `browser.dispatch_key(key='a', code='KeyA', key_code=65)` 模拟按`a`键。
+- `browser.dispatch_key(key='0', code='Digit0', key_code=48)` 模拟按 `0`键。
+- `browser.dispatch_key(key='ArrowUp', code='ArrowUp', key_code=38)` 模拟按` ↑ 上方向`键。
+  PS：通过[https://www.toptal.com/developers/keycode](https://https://www.toptal.com/developers/keycode)这个在线工具可以查询各按键对应的`key`、`code`、`key_code`值。
+
+`modifiers`参数用于表示哪些修饰键当前处于按下状态，例如 Ctrl、Shift、Alt、Meta（Command ⌘）。
+`modifiers`默认为0，表示无修饰键。关于`modifiers`取值具体的含义，详见下表。
+
+
+| 键名    | 值（2的幂） | 意义                 |
+| ------- | ----------- | -------------------- |
+| `Alt`   | 1           | 左 / 右 Alt 键       |
+| `Ctrl`  | 2           | 左 / 右 Control 键   |
+| `Meta`  | 4           | Meta 键（Win / Cmd） |
+| `Shift` | 8           | 左 / 右 Shift 键     |
+
+
+| 键组合             | modifiers 值   |
+| ------------------ | -------------- |
+| 无修饰键           | 0              |
+| Shift              | 8              |
+| Ctrl               | 2              |
+| Alt                | 1              |
+| Ctrl + Shift       | 2 + 8 = 10     |
+| Ctrl + Alt         | 2 + 1 = 3      |
+| Alt + Shift        | 1 + 8 = 9      |
+| Ctrl + Alt + Shift | 2 + 1 + 8 = 11 |
+| Cmd(Meta) + Shift  | 4 + 8 = 12     |
+
+示例：
+
+- `browser.dispatch_key(key='a', code='KeyA', key_code=65, modifiers=2)` 模拟 `Ctrl+A`（modifiers=2 为 Ctrl）。
+- `browser.dispatch_key(key='c', code='KeyC', key_code=67, modifiers=2)` 模拟 `Ctrl+C`（modifiers=2 为 Ctrl）。
+- `browser.dispatch_key(key='v', code='KeyV', key_code=86, modifiers=2)` 模拟 `Ctrl+V`（modifiers=2 为 Ctrl）。
+
+**注意：`dispatch_key()`只模拟键盘事件，并不会自动在输入框中插入字符。如果想要插入字符，请使用`browser.insert_text(text)`。**
+
+## 如何向元素插入（输入）文本？
+
+`browser.insert_text(text)`方法可以用来插入（输入）文本。需要先让目标元素（例如，输入框）获得焦点（比如通过“点击元素”），然后再执行插入文件操作。
 
 ## 如何向下滚动页面？
 
@@ -367,7 +400,6 @@ browser.close()
 
 将窗口恢复为普通状态：
 `browser.normal()`
-
 
 ## 如何指定浏览器路径？
 

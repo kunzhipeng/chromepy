@@ -747,7 +747,7 @@ class Chrome:
             speed=3000)
         return self.evaluate('window.scrollY')
     
-    def dispatch_key(self, key, code=None, key_code=None, modifiers=0, timeout=10):
+    def dispatch_key(self, key, code, key_code, modifiers=0, timeout=10):
         """Dispatch key event. https://chromedevtools.github.io/devtools-protocol/tot/Input/#method-dispatchKeyEvent
         key: Key to dispatch.
         code: Code of the key.
@@ -761,9 +761,9 @@ class Chrome:
         for _type in ['keyDown', 'keyUp']:
             self.get_tab().Input.dispatchKeyEvent(type=_type,
                 key=key,
-                code=code or key.upper(),
-                windowsVirtualKeyCode=key_code or ord(key),
-                #nativeVirtualKeyCode=key_code or ord(key),
+                code=code,
+                windowsVirtualKeyCode=key_code,
+                nativeVirtualKeyCode=key_code,
                 modifiers=modifiers,
                 text=text,
                 _timeout=timeout
@@ -774,6 +774,7 @@ class Chrome:
         text: Text to insert.
         """
         self.get_tab().Input.insertText(text=text, _timeout=timeout)
+        
     
     def click_xy(self, x, y, timeout=10):
         """Click the point with x, y coordinates of the browser viewport.
