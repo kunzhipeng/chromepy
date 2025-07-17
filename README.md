@@ -62,6 +62,7 @@ browser = chrome.Chrome(proxy=proxy)
 ## 设置User-Agent、Accept-Language
 
 `Chrome`类的`user_agent`参数用于设置`User-Agent`，`accept_language`参数用于设置`Accept-Language`。
+
 这里指定的UA，不但会覆盖所有请求的`User-Agent`头（包括主文档、资源、XHR 等），还会修改JS环境中`navigator.userAgent`的返回值。
 
 ```python
@@ -206,10 +207,6 @@ browser.open('http://httpbin.org/cookies')
 browser.wait_for_text(text='"cookies"', timeout=10)
 # 获取当前页面的Cookies
 print('Cookies:', json.dumps(browser.get_cookies(), ensure_ascii=False, indent=4))
-
-# 关闭浏览器
-input("Press Enter to close the browser and exit...")
-browser.close()
 ```
 
 # 执行JS代码
@@ -232,10 +229,6 @@ browser.sleep(1)
 browser.evaluate('document.getElementById("su").click()')
 # "点击搜索"方法二：通过模拟鼠标操作实现
 # browser.click(css_selector='#su')
-
-# 关闭浏览器
-input("Press Enter to close the browser and exit...")
-browser.close()
 ```
 
 ## 判断页面加载是否完成（完整）
@@ -283,10 +276,6 @@ else:
     # 获取页面HTML
     html = browser.content
     print('Page HTML:', html)
-
-# 关闭浏览器
-input("Press Enter to close the browser and exit...")
-browser.close()
 ```
 
 ## 点击页面元素
@@ -348,6 +337,26 @@ PS：通过[https://www.toptal.com/developers/keycode](https://https://www.topta
 
 `browser.insert_text(text)`方法可以用来插入（输入）文本。需要先让目标元素（例如，输入框）获得焦点（比如通过“点击元素”），然后再执行插入文件操作。
 
+我们换一种方式来实现上面的“百度搜索关键词”示例。主要用`insert_text()`输入搜索关键词代替“执行js - 实现填入关键词”，用`dispatch_key()`模拟按回车代替“按搜索按钮”。
+```python
+from chromepy import chrome
+
+# 打开百度首页，聚焦关键词输入框，输入关键词"西安鲲之鹏"，然后按回车提交搜索
+# 启动浏览器
+browser = chrome.Chrome(debug=False)
+
+# 打开百度首页
+browser.open('https://www.baidu.com')
+# 等待加载完成
+browser.wait_for_text('id="kw"')
+
+# 输入文本
+browser.insert_text("西安鲲之鹏")
+browser.sleep(0.3)
+# 模拟按回车键
+browser.dispatch_key(key='Enter', code='Enter', key_code=13)
+```
+
 ## 向下滚动页面
 
 `browser.scroll_down(distance)`方法提供了向下滚动页面的功能，`distance`参数用于控制滚动的距离。返回值为`相对于页面顶端，窗口当前总共滚动了多少像素`(即window.scrollY)。
@@ -379,10 +388,6 @@ while num < 100:
             break
         else:
             browser.sleep(0.5)
-
-# 关闭浏览器
-input("Press Enter to close the browser and exit...")
-browser.close()
 ```
 
 ## 设置浏览器窗口位置、大小
