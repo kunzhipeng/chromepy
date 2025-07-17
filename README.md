@@ -47,7 +47,7 @@ input("Press Enter to close the browser and exit...")
 browser.close()
 ```
 
-## 代理设置
+## 代理IP设置
 
 ```python
 
@@ -61,7 +61,8 @@ browser = chrome.Chrome(proxy=proxy)
 
 ## 设置User-Agent、Accept-Language
 
-`Chrome`类的`user_agent`参数用于设置User-Agent，`accept_language`参数用于设置Accept-Language。
+`Chrome`类的`user_agent`参数用于设置`User-Agent`，`accept_language`参数用于设置`Accept-Language`。
+这里指定的UA，不但会覆盖所有请求的`User-Agent`头（包括主文档、资源、XHR 等），还会修改JS环境中`navigator.userAgent`的返回值。
 
 ```python
 from chromepy import chrome
@@ -115,7 +116,6 @@ except chrome.TimeoutError:
         "sourceScheme": "Secure",
         "value": "GA1.2.551494340.1752287800"
     },
-...
 ]
 ```
 
@@ -238,7 +238,7 @@ input("Press Enter to close the browser and exit...")
 browser.close()
 ```
 
-## 如何判断页面加载是否完成（完整）？
+## 判断页面加载是否完成（完整）
 
 `browser.open(url)`打开某个页面时，会在浏览器开始导航后立即返回，并不会等待页面加载完成。
 可以根据页面html内容是否包含指定的内容来判断页面是否加载完成（完整）。`chromepy`提供了如下方法：
@@ -289,13 +289,13 @@ input("Press Enter to close the browser and exit...")
 browser.close()
 ```
 
-## 如何点击页面元素？
+## 点击页面元素
 
 - `browser.click(css_selector, scroll=True)`：模拟鼠标点击指定的css选择器对应的元素，例如前面示例中的`browser.click(css_selector='#su')`。`scroll`参数为`True`时，点击元素前会先将元素滚动到页面可见区域。
 - `browser.click_xy(x, y)`：模拟鼠标点击指定的坐标位置。注意：这里的(x, y)坐标位置是相对于浏览器视口的左上角(0,0)的。
 - 也可以通过执行js来实现。例如，`browser.evaluate('document.getElementById("su").click()')`。
 
-## 如何模拟键盘事件？
+## 模拟键盘事件
 
 `browser.dispatch_key(key, code, key_code, modifiers=0)`用于发送按键事件。
 
@@ -309,7 +309,8 @@ browser.close()
 - `browser.dispatch_key(key='a', code='KeyA', key_code=65)` 模拟按`a`键。
 - `browser.dispatch_key(key='0', code='Digit0', key_code=48)` 模拟按 `0`键。
 - `browser.dispatch_key(key='ArrowUp', code='ArrowUp', key_code=38)` 模拟按` ↑ 上方向`键。
-  PS：通过[https://www.toptal.com/developers/keycode](https://https://www.toptal.com/developers/keycode)这个在线工具可以查询各按键对应的`key`、`code`、`key_code`值。
+
+PS：通过[https://www.toptal.com/developers/keycode](https://https://www.toptal.com/developers/keycode)这个在线工具可以查询各按键对应的`key`、`code`、`key_code`值。
 
 `modifiers`参数用于表示哪些修饰键当前处于按下状态，例如 Ctrl、Shift、Alt、Meta（Command ⌘）。
 `modifiers`默认为0，表示无修饰键。关于`modifiers`取值具体的含义，详见下表。
@@ -343,11 +344,11 @@ browser.close()
 
 **注意：`dispatch_key()`只模拟键盘事件，并不会自动在输入框中插入字符。如果想要插入字符，请使用`browser.insert_text(text)`。**
 
-## 如何向元素插入（输入）文本？
+## 向元素插入（输入）文本
 
 `browser.insert_text(text)`方法可以用来插入（输入）文本。需要先让目标元素（例如，输入框）获得焦点（比如通过“点击元素”），然后再执行插入文件操作。
 
-## 如何向下滚动页面？
+## 向下滚动页面
 
 `browser.scroll_down(distance)`方法提供了向下滚动页面的功能，`distance`参数用于控制滚动的距离。返回值为`相对于页面顶端，窗口当前总共滚动了多少像素`(即window.scrollY)。
 如下示例，将一直（最多100次）向下滚动页面直至滚动条位置不再发生变化。
@@ -384,7 +385,7 @@ input("Press Enter to close the browser and exit...")
 browser.close()
 ```
 
-## 如何设置浏览器窗口位置、大小？
+## 设置浏览器窗口位置、大小
 
 设置窗口位置：
 `browser.location(x, y)`
