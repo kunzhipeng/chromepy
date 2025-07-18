@@ -47,7 +47,9 @@ input("Press Enter to close the browser and exit...")
 browser.close()
 ```
 
-## 代理IP设置
+
+## 设置代理IP
+`Chrome`类的`proxy`参数用于设置代理IP。支持带用户名和密码认证的HTTP代理（格式：`http://username:password@ip:port`），和不带用户名密码认证的Socks5代理（格式：`socks5://ip:port`）。
 
 ```python
 
@@ -76,6 +78,14 @@ try:
     #browser.open('https://httpbin.org/headers')
 except chrome.TimeoutError:
     print('Timeout!')
+```
+
+## 如何屏蔽掉图片和CSS文件的下载
+`Chrome`类的`download_images`和`download_css`参数用于设置是否下载图片和CSS文件。设置为`False`表示不加载图片和CSS文件，这样可以提高采集效率。
+
+```python
+# 不下载图片和CSS文件
+browser = chrome.Chrome(download_images=False, download_css=False)
 ```
 
 ## Cookie相关操作
@@ -210,6 +220,8 @@ print('Cookies:', json.dumps(browser.get_cookies(), ensure_ascii=False, indent=4
 ```
 
 # 执行JS代码
+
+`browser.evaluate(script)` 用于执行JS代码并返回执行结果。
 
 ```python
 from chromepy import chrome
@@ -411,10 +423,25 @@ while num < 100:
 
 `Chrome`类的`chrome_path`参数可以用来指定chrome浏览器的可执行文件(例如chrome.exe)路径，不指定的情况下使用系统默认的chrome浏览器。
 
+## 如何给Chrome添加额外的命令行参数？
+
+`Chrome`类的`extra_cmd_args`参数可以用来添加额外的命令行参数。
+
+```python
+# 例如，使用VirtualBrowser时，我们需要传递额外的`--worker-id`参数
+browser = chrome.Chrome(extra_cmd_args=['--worker-id=1'])
+```
+
 ## 如何保持用户数据（使用固定的用户数据目录）？
 
-`Chrome`类的`chrome_user_data_dir`参数可以用来指定chrome浏览器的用户数据目录，默认不指定情况下，每次启动浏览器的时候创建临时的数据目录，关闭的时候自动删除该目录，无法保持用户数据。
+`Chrome`类的`chrome_user_data_dir`参数可以用来指定chrome浏览器的用户数据目录。不指定情况下（默认），每次启动浏览器的时候创建临时的数据目录，关闭的时候自动删除该目录，无法保持用户数据。
 如果想要保持用户数据，可以通过`chrome_user_data_dir`指定一个固定的用户数据目录，需要使用绝对路径。
+
+### 如何实现在Chrome浏览器启动前清理掉历史的cookies和cache？
+
+- 如果未指定`chrome_user_data_dir`，每次启动浏览器的时候创建临时的数据目录，也就不存在有历史cookies和cache数据。
+- 如果指定了`chrome_user_data_dir`，创建`Chrome`类前，先删掉（清空）对应的用户配置目录即可。
+
 
 ## 如何添加额外的http请求头？
 
@@ -475,8 +502,3 @@ browser.close()
 
 1. 每个线程需要创建独立的`Chrome`实例。
 2. 不同的`Chrome`实例不能使用相同的用户数据存储目录`chrome_user_data_dir`，否则只能成功启动其中的一个。建议不指定`chrome_user_data_dir`参数，或者每个线程使用不同的`chrome_user_data_dir`值。
-
-### 如何实现在Chrome浏览器启动前清理掉历史的cookies和cache？
-
-- 如果未指定`chrome_user_data_dir`，每次启动浏览器的时候创建临时的数据目录，也就不存在有历史cookies和cache数据。
-- 如果指定了`chrome_user_data_dir`，创建`Chrome`实例前，先删掉（清空）对应的用户配置目录即可。
