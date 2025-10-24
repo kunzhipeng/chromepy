@@ -929,11 +929,16 @@ class Chrome:
             if self.vdisplay:
                 self.vdisplay.stop()
             # Remove temporary user data directory
-            if self.temp_chrome_user_data_dir and os.path.exists(self.temp_chrome_user_data_dir):
-                try:
-                    shutil.rmtree(self.temp_chrome_user_data_dir)
-                except Exception as e:
-                    logger.error(e)
+            temp_dir = self.temp_chrome_user_data_dir
+            if temp_dir and os.path.exists(temp_dir):
+                for i in range(5):
+                    try:
+                        shutil.rmtree(temp_dir)
+                        logger.info(f"Successfully removed temp dir \"{temp_dir}\"")
+                        break
+                    except Exception as e:
+                        logger.warning(f"Attempt {i+1} failed to delete \"{temp_dir}\": {e}")
+                        time.sleep(2)
         else:
             try:
                 self.close_all_tabs()
