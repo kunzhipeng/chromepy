@@ -221,24 +221,24 @@ class Chrome:
             # Set proxy
             if self.proxy_url:
                 logger.debug('Set proxy into {}'.format(self.proxy_url))
-                chrome_args.append('--proxy-server="{}"'.format(self.proxy_url))
+                chrome_args.append('--proxy-server={}'.format(self.proxy_url))
             # User-agent
             if self.user_agent:
                 logger.debug('Set User-agent into "{}"'.format(self.user_agent))
-                chrome_args.append('--user-agent="{}"'.format(self.user_agent))
+                chrome_args.append('--user-agent={}'.format(self.user_agent))
             # # Chrome user data directory
             if self.chrome_user_data_dir:
                 logger.debug('Set --user-data-dir into "{}"'.format(self.chrome_user_data_dir))
-                chrome_args.append('--user-data-dir="{}"'.format(self.chrome_user_data_dir))
+                chrome_args.append('--user-data-dir={}'.format(self.chrome_user_data_dir))
             else:
                 self.temp_chrome_user_data_dir = os.path.normpath(tempfile.mkdtemp())
                 logger.debug('Create a temporary user data directory: "{}"'.format(self.temp_chrome_user_data_dir))
-                chrome_args.append('--user-data-dir="{}"'.format(self.temp_chrome_user_data_dir))
+                chrome_args.append('--user-data-dir={}'.format(self.temp_chrome_user_data_dir))
 
             # Chrome profile
             if self.chrome_profile:
                 logger.debug('Set --profile-directory into "{}"'.format(self.chrome_profile))
-                chrome_args.append('--profile-directory="{}"'.format(self.chrome_profile))
+                chrome_args.append('--profile-directory={}'.format(self.chrome_profile))
             # Headless model
             if not self.display:
                 logger.debug('Use headless model: --headless --no-sandbox --disable-gpu')
@@ -253,14 +253,14 @@ class Chrome:
                 chrome_args.append('--window-size={},{}'.format(self.window_size[0], self.window_size[1]))
 
             # Start chrome
-            cmd = '"{}"'.format(self.chrome_path) + ' ' + ' '.join(chrome_args)
-            logger.debug('Full cmd for start chrome: {}'.format(cmd))
             if IS_LINUX:
                 if not self.vdisplay:
                     logger.debug('Start Xvfb...')
                     self.vdisplay = Xvfb(width=1920, height=1080, colordepth=24)
-                    self.vdisplay.start()   
-            self.chrome_process = subprocess.Popen(cmd, shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)     
+                    self.vdisplay.start()
+            full_args = [self.chrome_path] + chrome_args
+            logger.debug('Full args for start chrome: {}'.format(full_args))
+            self.chrome_process = subprocess.Popen(full_args, shell=False, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)   
         else:
             if not proxy:
                 logger.debug('Since the chrome has started, the proxy parameter will be ignored.')
