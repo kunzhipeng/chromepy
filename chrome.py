@@ -77,7 +77,6 @@ DEFAULT_CHROME_CMD_ARGS = [
     '--disable-background-networking',
     '--disable-dev-shm-usage',
     '--disable-features=IsolateOrigins,site-per-process,Translate,InsecureDownloadWarnings,DownloadBubble,DownloadBubbleV2,OptimizationTargetPrediction,OptimizationGuideModelDownloading,SidePanelPinning,UserAgentClientHint,PrivacySandboxSettings4,DisableLoadExtensionCommandLineSwitch',
-    '--disable-features=IsolateOrigins,site-per-process',
     '--disable-session-crashed-bubble',
     '--remote-debugging-host=127.0.0.1']
 
@@ -99,6 +98,7 @@ class Chrome:
                  chrome_profile=None,
                  extra_cmd_args=None,
                  remote_url=None,
+                 urls_to_block=None,
                  before_request_sent_callback=None,
                  after_response_reveiced_callback=None,
                  execution_context_created_callback=None,
@@ -134,6 +134,7 @@ class Chrome:
         self.proxy_username = None
         self.proxy_password = None
         self.remote_url = remote_url
+        self.urls_to_block = urls_to_block or []
         self.user_agent = user_agent
         self.accept_language = accept_language
         self.display = display
@@ -185,8 +186,8 @@ class Chrome:
                 self.proxy_port = int(groups.get('port'))
                 self.proxy_url = '{}://{}:{}'.format(self.proxy_scheme, self.proxy_host, self.proxy_port)
             if self.proxy_username and self.proxy_password:
-                logger.debug('proxy_username:', self.proxy_username)
-                logger.debug('proxy_password:', self.proxy_password)
+                logger.debug('proxy_username: {}'.format(self.proxy_username))
+                logger.debug('proxy_password: {}'.format(self.proxy_password))
         
         if not self.remote_url:
             # Not specify remoge_url, will start a chrome instance
@@ -260,7 +261,7 @@ class Chrome:
                     self.vdisplay.start()
             full_args = [self.chrome_path] + chrome_args
             logger.debug('Full args for start chrome: {}'.format(full_args))
-            self.chrome_process = subprocess.Popen(full_args, shell=False, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)   
+            self.chrome_process = subprocess.Popen(full_args, shell=False, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
         else:
             if not proxy:
                 logger.debug('Since the chrome has started, the proxy parameter will be ignored.')
@@ -451,16 +452,19 @@ class Chrome:
                     # https://chromedevtools.github.io/devtools-protocol/tot/Emulation/#method-setUserAgentOverride
                     self.tab.Emulation.setUserAgentOverride(**args)
                     need_network_enabled = True
-            urls_to_block = []
             if not self.download_images:
                 # Do not download images
-                urls_to_block.extend(['*.jpg', '*.png', '*.gif', '*.woff'])
+                for url_pattern in ['*.jpg', '*.png', '*.gif', '*.woff']:
+                    if url_pattern not in self.urls_to_block:
+                        self.urls_to_block.append(url_pattern)
             if not self.download_css:
                 # Do not download css files
-                urls_to_block.extend(['*.css'])
-            if urls_to_block:
-                logger.debug('Set blocked urls: {}'.format(urls_to_block))
-                self.tab.Network.setBlockedURLs(urls=urls_to_block)
+                for url_pattern in ['*.css']:
+                    if url_pattern not in self.urls_to_block:
+                        self.urls_to_block.append(url_pattern)
+            if self.urls_to_block:
+                logger.debug('Set blocked urls: {}'.format(self.urls_to_block))
+                self.tab.Network.setBlockedURLs(urls=self.urls_to_block)
                 need_network_enabled = True
             if self.before_request_sent_callback or self.after_response_reveiced_callback:
                 logger.debug('Add Network.requestWillBeSent callback')
@@ -922,7 +926,10 @@ class Chrome:
                     try:
                         p = psutil.Process(pid)
                         logger.debug('Killing process({}) {}.'.format(p.pid, p.name()))
-                        p.send_signal(SIGTERM)                 
+                        try:
+                            p.send_signal(SIGTERM)
+                        except psutil.AccessDenied:
+                            pass             
                     except psutil.NoSuchProcess:
                         logger.debug('Chrome process({}) exited indeed.'.format(pid))
             self.chrome_process = None
