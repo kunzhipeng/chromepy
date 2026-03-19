@@ -243,7 +243,9 @@ class Chrome:
             # Headless model
             if not self.display:
                 logger.debug('Use headless model: --headless --no-sandbox --disable-gpu')
-                chrome_args.append('--headless --no-sandbox --disable-gpu')
+                chrome_args.append('--headless')
+                chrome_args.append('--no-sandbox')
+                chrome_args.append('--disable-gpu')
             # Start position
             if self.start_position:
                 logger.debug('Set --window-position={},{}'.format(self.start_position[0], self.start_position[1]))
