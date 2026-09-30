@@ -50,6 +50,8 @@ def is_running_in_docker():
 DEFAULT_CHROME_CMD_ARGS = [
     '--remote-allow-origins=*',
     '--no-first-run',
+    '--no-startup-window',
+    '--disable-default-apps',
     '--no-service-autorun',
     '--disable-auto-reload',
     '--no-default-browser-check',
@@ -71,11 +73,15 @@ DEFAULT_CHROME_CMD_ARGS = [
     '--disable-search-engine-choice-screen',
     '--disable-backgrounding-occluded-windows',
     '--disable-client-side-phishing-detection',
+    '--disable-hang-monitor',
     '--disable-top-sites',
     '--disable-translate',
     '--disable-renderer-backgrounding',
     '--disable-background-networking',
     '--disable-dev-shm-usage',
+    '--use-mock-keychain',
+    '--disable-back-forward-cache',
+    '--disable-popup-blocking',
     '--disable-features=IsolateOrigins,site-per-process,Translate,InsecureDownloadWarnings,DownloadBubble,DownloadBubbleV2,OptimizationTargetPrediction,OptimizationGuideModelDownloading,SidePanelPinning,UserAgentClientHint,PrivacySandboxSettings4,DisableLoadExtensionCommandLineSwitch',
     '--disable-session-crashed-bubble',
     '--remote-debugging-host=127.0.0.1']
@@ -243,9 +249,12 @@ class Chrome:
             # Headless model
             if not self.display:
                 logger.debug('Use headless model: --headless --no-sandbox --disable-gpu')
-                chrome_args.append('--headless')
-                chrome_args.append('--no-sandbox')
-                chrome_args.append('--disable-gpu')
+                if '--headless' not in chrome_args:
+                    chrome_args.append('--headless')
+                if '--no-sandbox' not in chrome_args:
+                    chrome_args.append('--no-sandbox')
+                if '--disable-gpu' not in chrome_args:
+                    chrome_args.append('--disable-gpu')
             # Start position
             if self.start_position:
                 logger.debug('Set --window-position={},{}'.format(self.start_position[0], self.start_position[1]))
