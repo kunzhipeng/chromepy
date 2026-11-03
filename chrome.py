@@ -46,6 +46,15 @@ def is_running_in_docker():
     except Exception:
         return False
 
+def has_desktop():
+    # 方式一：DISPLAY 环境变量（X11）
+    if os.environ.get("DISPLAY"):
+        return True
+    # 方式二：Wayland
+    if os.environ.get("WAYLAND_DISPLAY"):
+        return True
+    return False
+
 
 # Default chrome command line arguments
 DEFAULT_CHROME_CMD_ARGS = [
@@ -266,7 +275,8 @@ class Chrome:
                 chrome_args.append('--window-size={},{}'.format(self.window_size[0], self.window_size[1]))
 
             # Start chrome
-            if IS_LINUX:
+            # On Linux, start Xvfb if no desktop environment
+            if IS_LINUX and not has_desktop():
                 if not self.vdisplay:
                     logger.debug('Start Xvfb...')
                     self.vdisplay = Xvfb(width=1920, height=1080, colordepth=24)
