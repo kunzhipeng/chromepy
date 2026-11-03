@@ -15,6 +15,7 @@ import tempfile
 import shutil
 import json
 import logging
+import random
 from urllib.parse import urlparse
 from signal import SIGTERM
 from contextlib import closing
@@ -289,13 +290,25 @@ class Chrome:
             else:
                 num += 1
                 if num >= 20:
-                    self.quit()
+                    # quit自身可能抛异常（如主进程已死时terminate报错），不能让它顶掉超时异常
+                    try:
+                        self.quit()
+                    except Exception as e:
+                        logger.error('Exception when quit chrome after CDP timeout: {}'.format(str(e)))
                     raise Exception('Can not connect to chrome during 20 seconds.')
                 else:
                     time.sleep(1)
 
         # create a cdp browser instance
-        self.cdpcli = cdp.Browser(url=self.remote_url, debug=self.debug)
+        try:
+            self.cdpcli = cdp.Browser(url=self.remote_url, debug=self.debug)
+        except Exception:
+            # cdp连接失败时chrome进程已经启动，必须先清理再抛异常，否则进程泄漏
+            try:
+                self.quit()
+            except Exception as e:
+                logger.error('Exception when quit chrome after cdp.Browser failure: {}'.format(str(e)))
+            raise
         self.tab = None
 
     def pick_free_port(self):
@@ -345,35 +358,42 @@ class Chrome:
             if os.path.exists(candidate) and os.access(candidate, os.X_OK):
                 return os.path.normpath(candidate)
             
-    def __request_intercepted(self, interceptionId, request, **kwargs):
-        """Network.requestIntercepted Callback
+    def __fetch_auth_required(self, requestId, request, authChallenge, **kwargs):
+        """Fetch.authRequired Callback
+
+        Chrome delegates authentication challenges to this callback when
+        Fetch.enable(handleAuthRequests=True) is used. Only proxy challenges
+        are answered with credentials; server (401) challenges are cancelled
+        so that proxy credentials never leak to a website.
         """
-        logger.debug("Intercepted request {}".format(request.get('url')))
-        headers = request.get('headers', {})
-        # if self.user_agent:
-        #     # Change UA
-        #     headers['User-Agent'] = self.user_agent
-        auth_challenge = kwargs.get('authChallenge')
-        if auth_challenge:
-            try:
-                # 30x redirect with http proxy auth
-                self.tab.Network.continueInterceptedRequest(
-                    interceptionId=interceptionId,
-                    headers=headers,
-                    authChallengeResponse={'response': 'ProvideCredentials', 
+        logger.debug("Auth required for {}, source = {}".format(request.get('url'), authChallenge.get('source')))
+        try:
+            if authChallenge.get('source') == 'Proxy' and self.proxy_username and self.proxy_password:
+                self.tab.Fetch.continueWithAuth(
+                    requestId=requestId,
+                    authChallengeResponse={'response': 'ProvideCredentials',
                                            'username': self.proxy_username,
                                            'password': self.proxy_password}
                 )
-            except Exception as e:
-                logger.debug('Exception when call Network.continueInterceptedRequest: {}'.format(str(e)))
-        else:
-            try:
-                self.tab.Network.continueInterceptedRequest(
-                    interceptionId=interceptionId,
-                    headers=headers
+            else:
+                self.tab.Fetch.continueWithAuth(
+                    requestId=requestId,
+                    authChallengeResponse={'response': 'CancelAuth'}
                 )
-            except Exception as e:
-               logger.debug('Exception when call Network.continueInterceptedRequest: {}'.format(str(e)))
+        except Exception as e:
+            logger.debug('Exception when call Fetch.continueWithAuth: {}'.format(str(e)))
+
+    def __fetch_request_paused(self, requestId, request, **kwargs):
+        """Fetch.requestPaused Callback
+
+        Every request intercepted by Fetch domain must be continued (or
+        failed/fulfilled), otherwise Chrome will never send it.
+        """
+        logger.debug("Intercepted request {}".format(request.get('url')))
+        try:
+            self.tab.Fetch.continueRequest(requestId=requestId)
+        except Exception as e:
+            logger.debug('Exception when call Fetch.continueRequest: {}'.format(str(e)))
             
         
     def __request_will_be_sent(self, request, **kwargs):
@@ -440,11 +460,14 @@ class Chrome:
             self.tab.start()
             self.tab.Page.stopLoading()
             if self.proxy_username:
-                logger.debug('Add Network.requestIntercepted callback')
-                # Need to add Proxy-Authorization credentials
-                self.tab.Network.requestIntercepted = self.__request_intercepted
-                # setRequestInterceptionEnabled has been removed, should use setRequestInterception now
-                self.tab.Network.setRequestInterception(patterns=[{"RequestPattern": '*'}])
+                # Network.setRequestInterception/continueInterceptedRequest have been
+                # removed from CDP. Proxy authentication is now handled by the Fetch domain:
+                # Fetch.authRequired gives us the 407 challenge, and Fetch.requestPaused
+                # must be continued for every intercepted request.
+                logger.debug('Enable Fetch domain to handle proxy authentication')
+                self.tab.Fetch.authRequired = self.__fetch_auth_required
+                self.tab.Fetch.requestPaused = self.__fetch_request_paused
+                self.tab.Fetch.enable(patterns=[{'urlPattern': '*'}], handleAuthRequests=True)
                 need_network_enabled = True
             if self.user_agent or self.accept_language:
                 # Set User-Agent header
@@ -800,6 +823,15 @@ class Chrome:
         self.get_tab().Input.dispatchMouseEvent(type='mousePressed', x=x, y=y, button='left', clickCount=1, _timeout=timeout)
         self.get_tab().Input.dispatchMouseEvent(type='mouseReleased', x=x, y=y, button='left', clickCount=1, _timeout=timeout)
 
+    def random_move(self, times=1, interval=0.1, timeout=10):
+        """Random move the mouse to a position in the browser viewport.
+        """
+        for _ in range(times):
+            x = random.randint(1, self.get_window_info()['bounds']['width'])
+            y = random.randint(1, self.get_window_info()['bounds']['height'])
+            logger.info(f'Random move to ({x}, {y})')
+            self.get_tab().Input.dispatchMouseEvent(type='mouseMoved', x=x, y=y, _timeout=timeout)
+            time.sleep(interval)
     
     def click(self, css_selector, scroll=True, timeout=10):
         """Click the item postioned by css selector
@@ -907,13 +939,16 @@ class Chrome:
         if self.chrome_process:
             try:
                 p = psutil.Process(self.chrome_process.pid)
-            except psutil.NoSuchProcess:
-                logger.debug('Process({}) does not exit.'.format(self.chrome_process.pid))
-            else:
                 chrome_pids = []
                 for sub_p in p.children(recursive=True):
                     chrome_pids.append(sub_p.pid)
                 return chrome_pids
+            except (psutil.NoSuchProcess, ValueError):
+                # 进程已死或pid无效，不算错误
+                logger.debug('Process({}) does not exit.'.format(self.chrome_process.pid))
+            except Exception as e:
+                logger.debug('Exception in get_chrome_subpids: {}'.format(str(e)))
+        return None
 
     def quit(self):
         """Close all tabs, exit the chrome
@@ -928,8 +963,12 @@ class Chrome:
             except Exception as e:
                 logger.debug('Exception in close_all_tabs: {}'.format(str(e)))
             # Terminate the main chrome process
-            self.chrome_process.terminate()
-            self.chrome_process.wait()
+            # terminate/wait失败（如进程已死）不应中断后续的子进程清理和临时目录删除
+            try:
+                self.chrome_process.terminate()
+                self.chrome_process.wait()
+            except Exception as e:
+                logger.debug('Exception when terminate chrome main process: {}'.format(str(e)))
             
             if chrome_pids:
                 # Kill all chrome subprocesses
@@ -945,7 +984,10 @@ class Chrome:
                         logger.debug('Chrome process({}) exited indeed.'.format(pid))
             self.chrome_process = None
             if self.vdisplay:
-                self.vdisplay.stop()
+                try:
+                    self.vdisplay.stop()
+                except Exception as e:
+                    logger.debug('Exception when stop vdisplay: {}'.format(str(e)))
             # Remove temporary user data directory
             temp_dir = self.temp_chrome_user_data_dir
             if temp_dir and os.path.exists(temp_dir):
