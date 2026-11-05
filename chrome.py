@@ -16,6 +16,8 @@ import shutil
 import json
 import logging
 import random
+import ctypes
+from ctypes import wintypes
 from urllib.parse import urlparse
 from signal import SIGTERM
 from contextlib import closing
@@ -284,6 +286,10 @@ class Chrome:
             full_args = [self.chrome_path] + chrome_args
             logger.debug('Full args for start chrome: {}'.format(full_args))
             self.chrome_process = subprocess.Popen(full_args, shell=False, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+            # Windows: 将chrome挂入本进程持有的Job Object
+            # python进程无论以何种方式退出(正常结束/异常/Ctrl+C/关闭窗口/taskkill /F)，
+            # 系统都会关闭Job句柄并自动杀掉chrome，彻底杜绝孤儿进程
+            self._hjob = self._assign_to_job(self.chrome_process.pid)
         else:
             if not proxy:
                 logger.debug('Since the chrome has started, the proxy parameter will be ignored.')
@@ -320,6 +326,88 @@ class Chrome:
                 logger.error('Exception when quit chrome after cdp.Browser failure: {}'.format(str(e)))
             raise
         self.tab = None
+
+    def _assign_to_job(self, pid):
+        """将指定进程挂入Windows Job Object(KILL_ON_JOB_CLOSE)
+        返回job句柄；句柄由本python进程持有，进程退出(含强杀)时系统自动杀掉job内全部进程。
+        非Windows平台或失败时返回None（不影响正常流程）。
+        """
+        if platform.system() != 'Windows':
+            return None
+        hjob = None
+        try:
+            kernel32 = ctypes.windll.kernel32
+
+            class IO_COUNTERS(ctypes.Structure):
+                _fields_ = [(n, ctypes.c_ulonglong) for n in (
+                    'ReadOperationCount', 'WriteOperationCount', 'OtherOperationCount',
+                    'ReadTransferCount', 'WriteTransferCount', 'OtherTransferCount')]
+
+            class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+                _fields_ = [
+                    ('PerProcessUserTimeLimit', ctypes.c_int64),
+                    ('PerJobUserTimeLimit', ctypes.c_int64),
+                    ('LimitFlags', wintypes.DWORD),
+                    ('MinimumWorkingSetSize', ctypes.c_size_t),
+                    ('MaximumWorkingSetSize', ctypes.c_size_t),
+                    ('ActiveProcessLimit', wintypes.DWORD),
+                    ('Affinity', ctypes.c_size_t),
+                    ('PriorityClass', wintypes.DWORD),
+                    ('SchedulingClass', wintypes.DWORD),
+                ]
+
+            class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+                _fields_ = [
+                    ('BasicLimitInformation', JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                    ('IoInfo', IO_COUNTERS),
+                    ('ProcessMemoryLimit', ctypes.c_size_t),
+                    ('JobMemoryLimit', ctypes.c_size_t),
+                    ('PeakProcessMemoryUsed', ctypes.c_size_t),
+                    ('PeakJobMemoryUsed', ctypes.c_size_t),
+                ]
+
+            JobObjectExtendedLimitInformation = 9
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+            PROCESS_SET_QUOTA = 0x0100
+            PROCESS_TERMINATE = 0x0001
+
+            hjob = kernel32.CreateJobObjectW(None, None)
+            if not hjob:
+                raise OSError('CreateJobObjectW failed')
+            info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            if not kernel32.SetInformationJobObject(
+                    hjob, JobObjectExtendedLimitInformation,
+                    ctypes.byref(info), ctypes.sizeof(info)):
+                raise OSError('SetInformationJobObject failed')
+            hproc = kernel32.OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, False, pid)
+            if not hproc:
+                raise OSError('OpenProcess({}) failed'.format(pid))
+            if not kernel32.AssignProcessToJobObject(hjob, hproc):
+                raise OSError('AssignProcessToJobObject failed')
+            kernel32.CloseHandle(hproc)
+            logger.debug('Process({}) assigned to job object.'.format(pid))
+        except Exception as e:
+            logger.debug('Assign to job object failed: {}'.format(str(e)))
+            if hjob:
+                kernel32 = ctypes.windll.kernel32
+                kernel32.CloseHandle(hjob)
+                hjob = None
+        return hjob
+
+    def _kill_by_job(self):
+        """主动终止job内所有进程并关闭句柄
+        """
+        hjob = getattr(self, '_hjob', None)
+        if not hjob:
+            return
+        try:
+            kernel32 = ctypes.windll.kernel32
+            kernel32.TerminateJobObject(hjob, 0)
+            kernel32.CloseHandle(hjob)
+        except Exception as e:
+            logger.debug('Exception in _kill_by_job: {}'.format(str(e)))
+        self._hjob = None
 
     def pick_free_port(self):
         """pick a free port number
@@ -979,6 +1067,8 @@ class Chrome:
                 self.chrome_process.wait()
             except Exception as e:
                 logger.debug('Exception when terminate chrome main process: {}'.format(str(e)))
+            # 冗余兜底：直接终止整个Job，确保组内所有进程（含子进程树）全部退出
+            self._kill_by_job()
             
             if chrome_pids:
                 # Kill all chrome subprocesses
