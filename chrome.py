@@ -929,8 +929,8 @@ class Chrome:
     # ------------------------------------------------------------------
     # 拟人化鼠标移动
     # ------------------------------------------------------------------
-    # 真实鼠标回报率一般 125Hz,浏览器侧按 60~90Hz 采样,这里取中间值
-    _MOUSE_HZ = 85
+    # 按 60Hz 规划轨迹,减少同步 CDP 请求的通信开销
+    _MOUSE_HZ = 60
 
     @staticmethod
     def _min_jerk(t):
@@ -1048,14 +1048,21 @@ class Chrome:
         """按规划轨迹逐点派发 mouseMoved 事件,返回最后一个落点的整数坐标
         """
         last = None
-        for x, y, delay in plan:
-            if delay > 0:
-                time.sleep(delay)
+        tab = self.get_tab()
+        deadline = time.perf_counter()
+        for index, (x, y, delay) in enumerate(plan):
+            deadline += delay
+            remaining = deadline - time.perf_counter()
+            if remaining > 0:
+                time.sleep(remaining)
+            # 通信慢于采样节奏时跳过过期点,但始终派发最终落点。
+            if index + 1 < len(plan) and deadline + plan[index + 1][2] <= time.perf_counter():
+                continue
             x, y = int(round(x)), int(round(y))
             if last is not None and (x, y) == last and len(plan) > 1:
                 # 位置没变化,真实鼠标不会产生新的移动事件(低速段很常见)
                 continue
-            self.get_tab().Input.dispatchMouseEvent(
+            tab.Input.dispatchMouseEvent(
                 type='mouseMoved',
                 x=x,
                 y=y,
@@ -1068,11 +1075,14 @@ class Chrome:
             last = (int(round(plan[-1][0])), int(round(plan[-1][1])))
         return last
 
-    def move_to(self, x, y, timeout=10, overshoot=None):
+    def move_to(self, x, y, timeout=10, overshoot=None, duration_scale=1.0):
         """沿拟人轨迹把鼠标移动到视口坐标 (x, y)。
+        duration_scale: 轨迹耗时倍率,必须为有限正数;小于 1 时加快移动。
         overshoot: 是否做"冲过头再修正",None 表示按距离和概率随机决定 ——
                    真实的长距离甩动经常稍微冲过目标,再靠一次短促修正拉回来。
         """
+        if not math.isfinite(duration_scale) or duration_scale <= 0:
+            raise ValueError('duration_scale must be a finite positive number')
         width, height = self._viewport_size(timeout=timeout)
         target = (min(max(float(x), 0.0), width - 1.0),
                   min(max(float(y), 0.0), height - 1.0))
@@ -1084,15 +1094,15 @@ class Chrome:
             ratio = random.uniform(1.004, 1.03)
             over = (start[0] + (target[0] - start[0]) * ratio,
                     start[1] + (target[1] - start[1]) * ratio)
-            plan = self._plan_move(start, over, duration_scale=0.82,
+            plan = self._plan_move(start, over, duration_scale=0.82 * duration_scale,
                                    bounds=(width, height))
             last = self._emit_move(plan, timeout=timeout)
             time.sleep(random.uniform(0.03, 0.09))
             # 修正动作短、抖、直
-            plan = self._plan_move(last, target, tremor=0.4, duration_scale=0.35,
+            plan = self._plan_move(last, target, tremor=0.4, duration_scale=0.35 * duration_scale,
                                    bounds=(width, height))
         else:
-            plan = self._plan_move(start, target, bounds=(width, height))
+            plan = self._plan_move(start, target, duration_scale=duration_scale, bounds=(width, height))
         self._mouse_pos = self._emit_move(plan, timeout=timeout)
         # 到位后偶尔来一两下 1px 以内的微调,像人在确认落点
         if random.random() < 0.35:
@@ -1104,14 +1114,17 @@ class Chrome:
                 self._mouse_pos = self._emit_move([(jx, jy, 0.0)], timeout=timeout)
         return self._mouse_pos
 
-    def random_move(self, times=1, interval=0.1, timeout=10, area=None):
+    def random_move(self, times=1, interval=0.1, timeout=10, area=None, duration_scale=0.7):
         """在浏览器视口内随机移动鼠标若干次,轨迹与节奏模仿真人。
 
         times: 移动次数。
+        duration_scale: 轨迹耗时倍率,默认 0.7;传 1 使用原来的规划时长。
         interval: 两次移动之间的停顿(秒),实际会在此基础上随机浮动;传 0 表示不额外停顿。
         area: 可选,限定活动区域 (left, top, right, bottom),默认全视口(四边各留 4% 边距,
               真人很少把光标顶到最边上)。
         """
+        if not math.isfinite(duration_scale) or duration_scale <= 0:
+            raise ValueError('duration_scale must be a finite positive number')
         width, height = self._viewport_size(timeout=timeout)
         margin_x, margin_y = int(width * 0.04), int(height * 0.04)
         left, top, right, bottom = area or (margin_x, margin_y,
@@ -1137,7 +1150,7 @@ class Chrome:
                 x = random.randint(left, right)
                 y = random.randint(top, bottom)
             logger.info('Human-like move to ({}, {})'.format(x, y))
-            self.move_to(x, y, timeout=timeout)
+            self.move_to(x, y, timeout=timeout, duration_scale=duration_scale)
         return self._mouse_pos
 
     def click(self, css_selector, scroll=True, timeout=10):
