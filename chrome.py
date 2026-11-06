@@ -14,6 +14,7 @@ import psutil
 import tempfile
 import shutil
 import json
+import math
 import logging
 import random
 import ctypes
@@ -326,6 +327,8 @@ class Chrome:
                 logger.error('Exception when quit chrome after cdp.Browser failure: {}'.format(str(e)))
             raise
         self.tab = None
+        # 上一次的鼠标位置(视口坐标),None 表示未知
+        self._mouse_pos = None
 
     def _assign_to_job(self, pid):
         """将指定进程挂入Windows Job Object(KILL_ON_JOB_CLOSE)
@@ -920,17 +923,223 @@ class Chrome:
         self.get_tab().Input.dispatchMouseEvent(type='mouseMoved', x=x, y=y, _timeout=timeout)
         self.get_tab().Input.dispatchMouseEvent(type='mousePressed', x=x, y=y, button='left', clickCount=1, _timeout=timeout)
         self.get_tab().Input.dispatchMouseEvent(type='mouseReleased', x=x, y=y, button='left', clickCount=1, _timeout=timeout)
+        # 同步鼠标位置,保证后续 move_to/random_move 从正确的位置起算轨迹
+        self._mouse_pos = (int(round(x)), int(round(y)))
 
-    def random_move(self, times=1, interval=0.1, timeout=10):
-        """Random move the mouse to a position in the browser viewport.
+    # ------------------------------------------------------------------
+    # 拟人化鼠标移动
+    # ------------------------------------------------------------------
+    # 真实鼠标回报率一般 125Hz,浏览器侧按 60~90Hz 采样,这里取中间值
+    _MOUSE_HZ = 85
+
+    @staticmethod
+    def _min_jerk(t):
+        """最小抖动(minimum-jerk)归一化位移曲线。
+        真人手部运动的速度是钟形的:先加速、中段最快、收尾减速,而非常速直线。
         """
-        for _ in range(times):
-            x = random.randint(1, self.get_window_info()['bounds']['width'])
-            y = random.randint(1, self.get_window_info()['bounds']['height'])
-            logger.info(f'Random move to ({x}, {y})')
-            self.get_tab().Input.dispatchMouseEvent(type='mouseMoved', x=x, y=y, _timeout=timeout)
-            time.sleep(interval)
-    
+        t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
+        return t * t * t * (10.0 - 15.0 * t + 6.0 * t * t)
+
+    @staticmethod
+    def _fitts_duration(distance, tolerance=24.0):
+        """按 Fitts 定律估算移动耗时(秒):距离越远越慢,但增长是对数的而非线性。
+        """
+        distance = max(float(distance), 1.0)
+        base = 0.085 + 0.13 * math.log2(1.0 + distance / tolerance)
+        return min(max(base * random.uniform(0.85, 1.2), 0.08), 1.6)
+
+    def _viewport_size(self, timeout=10):
+        """获取视口尺寸。
+        注意不能用 get_window_info() 的 bounds:那是窗口外框尺寸,包含了地址栏、
+        标签栏、书签栏等浏览器自身的 UI,落在这些区域里的坐标不会产生页面内的
+        鼠标事件(等于白动一次)。
+        """
+        try:
+            info = self.evaluate(
+                'JSON.stringify({w: window.innerWidth, h: window.innerHeight})',
+                timeout=timeout)
+            size = json.loads(info) if info else None
+            if size and size.get('w') and size.get('h'):
+                return int(size['w']), int(size['h'])
+        except Exception as e:
+            logger.debug('Get viewport size by JS failed: {}'.format(str(e)))
+        try:
+            bounds = self.get_window_info(timeout=timeout)['bounds']
+            # 拿不到视口时退回窗口外框,粗略扣掉边框和浏览器 UI
+            return max(int(bounds['width']) - 16, 100), max(int(bounds['height']) - 88, 100)
+        except Exception as e:
+            logger.debug('Get viewport size by window bounds failed: {}'.format(str(e)))
+        return 1280, 720
+
+    def _guess_mouse_pos(self, width, height):
+        """鼠标位置未知时,以视口中部偏下的区域作为起点(最常见的停留位置)
+        """
+        return (int(width * random.uniform(0.35, 0.65)),
+                int(height * random.uniform(0.35, 0.70)))
+
+    def _plan_move(self, start, end, tremor=1.0, duration_scale=1.0, bounds=None):
+        """规划一条拟人轨迹,返回 [(x, y, delay), ...],delay 是距上一个点的等待秒数。
+
+        轨迹由三部分叠加而成:
+        1. 三次贝塞尔曲线 —— 人手走的是带弧度的曲线,终点越远弯得越明显;
+        2. 最小抖动速度剖面 —— 钟形速度,带轻微不对称(加速段比减速段短);
+        3. 手抖 —— 低频正弦 + 高斯噪声,且越接近落点幅度越小(瞄准末段更稳)。
+        """
+        x0, y0 = float(start[0]), float(start[1])
+        x1, y1 = float(end[0]), float(end[1])
+        dx, dy = x1 - x0, y1 - y0
+        distance = math.hypot(dx, dy)
+        if distance < 0.5:
+            return [(x1, y1, 0.0)]
+
+        duration = max(self._fitts_duration(distance) * duration_scale, 0.05)
+        steps = int(min(max(duration * self._MOUSE_HZ, 6), 90))
+        dt = duration / steps
+        # 单位法向量,弧度和手抖都加在这个方向上
+        ux, uy = -dy / distance, dx / distance
+        # 贝塞尔控制点:沿弦方向取随机比例,再沿法向偏移,曲率随距离增长但有上限
+        bend = random.uniform(-1.0, 1.0) * min(distance * 0.18, 70.0)
+        c1, c2 = random.uniform(0.15, 0.35), random.uniform(0.65, 0.85)
+        p1x = x0 + dx * c1 + ux * bend * random.uniform(0.7, 1.0)
+        p1y = y0 + dy * c1 + uy * bend * random.uniform(0.7, 1.0)
+        p2x = x0 + dx * c2 + ux * bend * random.uniform(0.2, 0.5)
+        p2y = y0 + dy * c2 + uy * bend * random.uniform(0.2, 0.5)
+        # 手抖参数
+        freq = random.uniform(1.1, 2.6)
+        phase = random.uniform(0.0, 2.0 * math.pi)
+        amplitude = min(1.6, 0.3 + distance * 0.0025) * tremor
+        # 加速段比减速段短 —— 真人收尾更慢
+        skew = random.uniform(0.80, 0.95)
+        # 偶尔中途卡顿一下(人是会走神的)
+        stall_at = 0
+        stall_extra = 0.0
+        if steps > 8 and random.random() < 0.15:
+            stall_at = random.randint(max(int(steps * 0.3), 1), max(int(steps * 0.7), 2))
+            stall_extra = random.uniform(0.02, 0.07)
+
+        points = []
+        for i in range(1, steps + 1):
+            t = (i / float(steps)) ** skew
+            s = self._min_jerk(t)
+            b = 1.0 - s
+            px = (b ** 3) * x0 + 3 * (b ** 2) * s * p1x + 3 * b * (s ** 2) * p2x + (s ** 3) * x1
+            py = (b ** 3) * y0 + 3 * (b ** 2) * s * p1y + 3 * b * (s ** 2) * p2y + (s ** 3) * y1
+            damp = 1.0 - s
+            offset = (amplitude * damp * math.sin(2.0 * math.pi * freq * s + phase)
+                      + random.gauss(0.0, 0.35 * damp + 0.05))
+            px += ux * offset
+            py += uy * offset
+            if bounds:
+                px = min(max(px, 0.0), bounds[0] - 1.0)
+                py = min(max(py, 0.0), bounds[1] - 1.0)
+            delay = dt * random.uniform(0.85, 1.15)
+            if stall_at and i == stall_at:
+                delay += stall_extra
+            points.append((px, py, delay))
+
+        # 归一化等待时间,避免随机抖动把总耗时拉偏
+        total = sum(p[2] for p in points)
+        if total > 0:
+            weight = duration / total
+            points = [(p[0], p[1], p[2] * weight) for p in points]
+        return points
+
+    def _emit_move(self, plan, timeout=10):
+        """按规划轨迹逐点派发 mouseMoved 事件,返回最后一个落点的整数坐标
+        """
+        last = None
+        for x, y, delay in plan:
+            if delay > 0:
+                time.sleep(delay)
+            x, y = int(round(x)), int(round(y))
+            if last is not None and (x, y) == last and len(plan) > 1:
+                # 位置没变化,真实鼠标不会产生新的移动事件(低速段很常见)
+                continue
+            self.get_tab().Input.dispatchMouseEvent(
+                type='mouseMoved',
+                x=x,
+                y=y,
+                button='none',
+                buttons=0,
+                timestamp=time.time(),
+                _timeout=timeout)
+            last = (x, y)
+        if last is None:
+            last = (int(round(plan[-1][0])), int(round(plan[-1][1])))
+        return last
+
+    def move_to(self, x, y, timeout=10, overshoot=None):
+        """沿拟人轨迹把鼠标移动到视口坐标 (x, y)。
+        overshoot: 是否做"冲过头再修正",None 表示按距离和概率随机决定 ——
+                   真实的长距离甩动经常稍微冲过目标,再靠一次短促修正拉回来。
+        """
+        width, height = self._viewport_size(timeout=timeout)
+        target = (min(max(float(x), 0.0), width - 1.0),
+                  min(max(float(y), 0.0), height - 1.0))
+        start = self._mouse_pos or self._guess_mouse_pos(width, height)
+        distance = math.hypot(target[0] - start[0], target[1] - start[1])
+        if overshoot is None:
+            overshoot = distance > 220 and random.random() < 0.55
+        if overshoot and distance > 220:
+            ratio = random.uniform(1.004, 1.03)
+            over = (start[0] + (target[0] - start[0]) * ratio,
+                    start[1] + (target[1] - start[1]) * ratio)
+            plan = self._plan_move(start, over, duration_scale=0.82,
+                                   bounds=(width, height))
+            last = self._emit_move(plan, timeout=timeout)
+            time.sleep(random.uniform(0.03, 0.09))
+            # 修正动作短、抖、直
+            plan = self._plan_move(last, target, tremor=0.4, duration_scale=0.35,
+                                   bounds=(width, height))
+        else:
+            plan = self._plan_move(start, target, bounds=(width, height))
+        self._mouse_pos = self._emit_move(plan, timeout=timeout)
+        # 到位后偶尔来一两下 1px 以内的微调,像人在确认落点
+        if random.random() < 0.35:
+            for _ in range(random.randint(1, 2)):
+                time.sleep(random.uniform(0.02, 0.06))
+                # 位移至少 1px,否则等于没动
+                jx = self._mouse_pos[0] + random.choice((-1, 1))
+                jy = self._mouse_pos[1] + random.choice((-1, 0, 1))
+                self._mouse_pos = self._emit_move([(jx, jy, 0.0)], timeout=timeout)
+        return self._mouse_pos
+
+    def random_move(self, times=1, interval=0.1, timeout=10, area=None):
+        """在浏览器视口内随机移动鼠标若干次,轨迹与节奏模仿真人。
+
+        times: 移动次数。
+        interval: 两次移动之间的停顿(秒),实际会在此基础上随机浮动;传 0 表示不额外停顿。
+        area: 可选,限定活动区域 (left, top, right, bottom),默认全视口(四边各留 4% 边距,
+              真人很少把光标顶到最边上)。
+        """
+        width, height = self._viewport_size(timeout=timeout)
+        margin_x, margin_y = int(width * 0.04), int(height * 0.04)
+        left, top, right, bottom = area or (margin_x, margin_y,
+                                            width - margin_x, height - margin_y)
+        left, right = max(int(left), 0), min(int(right), width - 1)
+        top, bottom = max(int(top), 0), min(int(bottom), height - 1)
+        if right <= left or bottom <= top:
+            raise ValueError('Invalid area: {}'.format(area))
+
+        for i in range(times):
+            if i > 0 and interval:
+                # 真人不会按固定节拍移动,停顿时间本身也是抖动的
+                time.sleep(max(interval * random.uniform(0.6, 1.6), 0.0))
+            # 近一半的移动是"就近活动":人不会每次都横跨整屏
+            if self._mouse_pos and random.random() < 0.45:
+                span_x = random.randint(80, 320)
+                span_y = random.randint(60, 220)
+                x = self._mouse_pos[0] + random.randint(-span_x, span_x)
+                y = self._mouse_pos[1] + random.randint(-span_y, span_y)
+                x = min(max(x, left), right)
+                y = min(max(y, top), bottom)
+            else:
+                x = random.randint(left, right)
+                y = random.randint(top, bottom)
+            logger.info('Human-like move to ({}, {})'.format(x, y))
+            self.move_to(x, y, timeout=timeout)
+        return self._mouse_pos
+
     def click(self, css_selector, scroll=True, timeout=10):
         """Click the item postioned by css selector
         scroll: If True, scroll the element into the visible area first.

@@ -296,6 +296,25 @@ else:
 - `browser.click_xy(x, y)`：模拟鼠标点击指定的坐标位置。注意：这里的(x, y)坐标位置是相对于浏览器视口的左上角(0,0)的。
 - 也可以通过执行js来实现。例如，`browser.evaluate('document.getElementById("su").click()')`。
 
+## 模拟鼠标移动（拟人化）
+
+- `browser.move_to(x, y)`：把鼠标沿真实轨迹移动到视口坐标 `(x, y)`。
+- `browser.random_move(times=1, interval=0.1, area=None)`：在视口内随机移动鼠标 `times` 次。
+
+轨迹不是"一步到位"，而是按人手运动的特征生成：三次贝塞尔曲线（不是直线）＋最小抖动速度剖面（钟形速度，先加速后减速）＋手抖噪声（越接近落点越稳），长距离还会冲过目标几像素再修正；每次移动耗时按 Fitts 定律随距离变化，并带随机浮动。坐标基于**视口**（`window.innerWidth/innerHeight`）而非窗口外框，因此不会被地址栏、标签栏吃掉。
+
+```python
+from chromepy import chrome
+
+browser = chrome.Chrome()
+browser.open('https://www.baidu.com')
+
+# 移动到视口坐标 (300, 200) 附近
+browser.move_to(300, 200)
+# 在页面左上角区域随机动 3 次，两次之间停顿 0.5 秒左右
+browser.random_move(times=3, interval=0.5, area=(0, 0, 800, 400))
+```
+
 ## 模拟键盘事件
 
 `browser.dispatch_key(key, code, key_code, modifiers=0)`用于发送按键事件。
