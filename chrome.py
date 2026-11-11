@@ -19,7 +19,7 @@ import logging
 import random
 import ctypes
 from ctypes import wintypes
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit, unquote
 from signal import SIGTERM
 from contextlib import closing
 from . import cdp
@@ -105,6 +105,12 @@ class TimeoutError(Exception):
     pass
 
 class Chrome:
+
+    # Upper bound of the pending-request cache used by the response callback.
+    # Entries are normally removed as soon as loading finishes/fails; this is
+    # only a safety net so memory cannot grow without bound.
+    REQUESTS_CACHE_MAX = 10000
+
     def __init__(self, proxy=None, 
                  download_images=True,
                  download_css=True,
@@ -129,7 +135,6 @@ class Chrome:
         proxy: Proxy to use.
         download_images: Whether to download images.
         download_css: Whether to download css files.
-        load_timeout: Page load timeout(seconds).
         user_agent: Specify User-Agent.
         accept_language: Specify Accept-Language.
         display: A boolean that tells ghost to displays UI. Headless model. Chrome version >= 59.
@@ -153,6 +158,9 @@ class Chrome:
         self.proxy_username = None
         self.proxy_password = None
         self.remote_url = remote_url
+        # True when the user attaches to an already-running chrome, in which case
+        # the browser and its tabs are not ours and must not be closed on quit().
+        self.attach_mode = remote_url is not None
         self.urls_to_block = urls_to_block or []
         self.user_agent = user_agent
         self.accept_language = accept_language
@@ -184,26 +192,32 @@ class Chrome:
         else:
             logger.setLevel(logging.INFO)
         if proxy:
-            m = re.compile(r'^([a-z\d]+)\://', re.IGNORECASE).search(proxy)
-            if m:
-                self.proxy_scheme = m.group(1).lower()
-                if self.proxy_scheme == 'https':
-                    self.proxy_scheme = 'http'
-                proxy = re.compile(r'^[a-z\d]+\://', re.IGNORECASE).sub('', proxy)
-            else:
-                self.proxy_scheme = 'http'
-            if self.proxy_scheme not in ['http', 'socks5']:
-                raise Exception('Unsupported proxy type: {}'.format(self.proxy_scheme))
-            match = re.match(r'((?P<username>\w+):(?P<password>\w+)@)?(?P<host>\d{1,3}.\d{1,3}.\d{1,3}.\d{1,3})(:(?P<port>\d+))?', proxy)
-            if not match:
-                match = re.compile(r'((?P<username>\w+):(?P<password>\w+)@)?(?P<host>[a-z\d\.\-]+)(:(?P<port>\d+))?', re.IGNORECASE).match(proxy)
-            if match:
-                groups = match.groupdict()
-                self.proxy_username = groups.get('username')
-                self.proxy_password = groups.get('password')
-                self.proxy_host = groups.get('host') 
-                self.proxy_port = int(groups.get('port'))
-                self.proxy_url = '{}://{}:{}'.format(self.proxy_scheme, self.proxy_host, self.proxy_port)
+            # Parse proxy with urllib, so that percent-encoded credentials
+            # (e.g. "p%40ss") and IPv6 addresses are handled correctly.
+            raw_proxy = proxy if '://' in proxy else 'http://' + proxy
+            try:
+                parts = urlsplit(raw_proxy)
+                proxy_scheme = (parts.scheme or 'http').lower()
+                if proxy_scheme == 'https':
+                    proxy_scheme = 'http'
+                if proxy_scheme not in ['http', 'socks5']:
+                    raise Exception('Unsupported proxy type: {}'.format(proxy_scheme))
+                proxy_host = parts.hostname
+                proxy_port = parts.port
+            except Exception as e:
+                raise Exception('Invalid proxy "{}": {}'.format(proxy, str(e)))
+            if not proxy_host:
+                raise Exception('Invalid proxy "{}": missing host.'.format(proxy))
+            if proxy_port is None:
+                proxy_port = 1080 if proxy_scheme == 'socks5' else 8080
+            self.proxy_scheme = proxy_scheme
+            self.proxy_host = proxy_host
+            self.proxy_port = int(proxy_port)
+            self.proxy_username = unquote(parts.username) if parts.username else None
+            self.proxy_password = unquote(parts.password) if parts.password else None
+            # IPv6 literal must be wrapped in brackets for "--proxy-server="
+            proxy_host_for_url = '[{}]'.format(self.proxy_host) if ':' in self.proxy_host else self.proxy_host
+            self.proxy_url = '{}://{}:{}'.format(self.proxy_scheme, proxy_host_for_url, self.proxy_port)
             if self.proxy_username and self.proxy_password:
                 logger.debug('proxy_username: {}'.format(self.proxy_username))
                 logger.debug('proxy_password: {}'.format(self.proxy_password))
@@ -327,6 +341,9 @@ class Chrome:
                 logger.error('Exception when quit chrome after cdp.Browser failure: {}'.format(str(e)))
             raise
         self.tab = None
+        # ids of the tabs opened by this instance, so that attach_mode can clean
+        # up after itself without touching the user's tabs
+        self.owned_tab_ids = set()
         # 上一次的鼠标位置(视口坐标),None 表示未知
         self._mouse_pos = None
 
@@ -446,7 +463,12 @@ class Chrome:
                         candidates.add(os.sep.join((item, subitem, "chrome.exe")))
         else:
             # Linux
-            for item in os.environ.get("PATH").split(os.pathsep):
+            # PATH can be absent (e.g. under a bare cron/systemd environment),
+            # in which case os.environ.get("PATH") is None and .split would
+            # raise AttributeError.
+            for item in (os.environ.get("PATH") or "").split(os.pathsep):
+                if not item:
+                    continue
                 for subitem in (
                     "google-chrome",
                     "chromium",
@@ -502,7 +524,16 @@ class Chrome:
         """
         requestId = kwargs.get('requestId')
         logger.debug("Will send request {}, requestId = {}".format(request.get('url'), requestId))
-        self.requests_cache[requestId] = {'request': request, 'response': None}
+        # Only the "after_response" callback consumes requests_cache, so do not
+        # populate it at all when that callback is absent, otherwise the dict
+        # grows forever within the life of the tab.
+        if self.after_response_reveiced_callback:
+            # Defensive cap: every entry is normally removed by
+            # loadingFinished/loadingFailed, but a hard limit keeps memory
+            # bounded even if some CDP event is missed.
+            if len(self.requests_cache) >= self.REQUESTS_CACHE_MAX > 0:
+                self.requests_cache.pop(next(iter(self.requests_cache)), None)
+            self.requests_cache[requestId] = {'request': request, 'response': None}
         if self.before_request_sent_callback:
             self.before_request_sent_callback(request)
             
@@ -515,25 +546,40 @@ class Chrome:
                 self.requests_cache[requestId]['response'] = response
            
             
+    def __loading_failed(self, requestId, **kwargs):
+        """Network.loadingFailed Callback
+
+        Aborted/blocked/failed requests never fire loadingFinished, so their
+        cache entries have to be dropped here as well.
+        """
+        if self.requests_cache.pop(requestId, None):
+            logger.debug("Loading failed for {}, removed from cache.".format(requestId))
+
     def __loading__finished(self, requestId, **kwargs):
         """Network.loadingFinished Callback
         """
         logger.debug("Loading finished for {}".format(requestId))
+        # Pop the entry up front: it is no longer needed once the body has been
+        # fetched, and popping first keeps the cache clean even if the user
+        # callback raises.
+        entry = self.requests_cache.pop(requestId, None)
+        if not self.after_response_reveiced_callback:
+            return
         
-        if self.after_response_reveiced_callback:
-            if requestId in self.requests_cache:
-                request, response = self.requests_cache[requestId]['request'], self.requests_cache[requestId]['response']
-                try:
-                    body_obj = self.tab.Network.getResponseBody(requestId=requestId)
-                    body_text = body_obj['body']
-                    if body_obj['base64Encoded']:
-                        body_text = base64.decodestring(body_text)
-                except Exception as e:
-                    logger.debug('Failed to get response body for "{}": {}'.format(request.get('url'), str(e)))
-                    body_text = ''
-                self.after_response_reveiced_callback(request, response, body_text)
-            else:
-                logger.debug('Does not find related reponse data for requestId: {}'.format(requestId))
+        if entry:
+            request, response = entry['request'], entry['response']
+            try:
+                body_obj = self.tab.Network.getResponseBody(requestId=requestId)
+                body_text = body_obj['body']
+                if body_obj.get('base64Encoded'):
+                    # base64.decodestring() was removed in Python 3.9.
+                    body_text = base64.b64decode(body_text).decode('utf-8', errors='replace')
+            except Exception as e:
+                logger.debug('Failed to get response body for "{}": {}'.format(request.get('url'), str(e)))
+                body_text = ''
+            self.after_response_reveiced_callback(request, response, body_text)
+        else:
+            logger.debug('Does not find related reponse data for requestId: {}'.format(requestId))
 
     def __execution_context_created_callback(self, context):
         """Runtime.executionContextCreated Callback
@@ -558,6 +604,7 @@ class Chrome:
                 self.tab = tabs[0]
             else:
                 self.tab = self.cdpcli.new_tab()
+                self.owned_tab_ids.add(self.tab.id)
             self.tab.start()
             self.tab.Page.stopLoading()
             if self.proxy_username:
@@ -609,6 +656,7 @@ class Chrome:
                 logger.debug('Add Network.responseReceived callback')
                 self.tab.Network.responseReceived = self.__response_received
                 self.tab.Network.loadingFinished = self.__loading__finished
+                self.tab.Network.loadingFailed = self.__loading_failed
                 need_network_enabled = True
             if need_network_enabled:
                 self.tab.Network.enable()
@@ -627,14 +675,14 @@ class Chrome:
         self.get_tab().Page.addScriptToEvaluateOnNewDocument(source=script, _timeout=timeout)
 
 
-    def open(self, url, headers=None, slient=False, timeout=30):
+    def open(self, url, headers=None, silent=False, timeout=30):
         """Load url
         url: URL to load;
-        slient: Whether to print log;
+        silent: Whether to print log;
         timeout: An optional timeout.
         """
         self.iframe_execution_contexts.clear()
-        if not slient:
+        if not silent:
             logger.info('Opening "{}"...'.format(url))
         if headers:
             # Add extra headers
@@ -748,12 +796,15 @@ class Chrome:
                         
     def add_cookie(self, cookie, timeout=10):
         """Add a cookie.
+
+        The given dict is never modified: fields are filled in on a copy, so the
+        caller's dict stays clean (no injected "_timeout"/"domain" keys).
         """
-        if not cookie.get('domain'):
+        args = dict(cookie)
+        if not args.get('domain'):
             current_domain = urlparse(self.get_current_url()).netloc
             if current_domain:
-                cookie['domain'] = current_domain
-        args = cookie
+                args['domain'] = current_domain
         args['_timeout'] = timeout
         self.get_tab().Network.setCookie(**args)
 
@@ -826,15 +877,17 @@ class Chrome:
         return self.evaluate(script="document.title")
     
     @property
-    def cookies(self, timeout=10):
+    def cookies(self):
         """Returns all cookies as a List
+        Shorthand for get_cookies() with the default timeout.
+        """
+        return self.get_cookies()
+
+    def get_cookies(self, timeout=10):
+        """Returns all cookies as a List
+        timeout: How long to wait for the CDP response.
         """
         return self.get_tab().Network.getCookies(_timeout=timeout).get('cookies') or []
-    
-    def get_cookies(self):
-        """Duplicate of cookies()
-        """
-        return self.cookies
     
     def get_cookies_dict(self):
         """Returns all cookies as a Dict
@@ -1156,24 +1209,39 @@ class Chrome:
     def click(self, css_selector, scroll=True, timeout=10):
         """Click the item postioned by css selector
         scroll: If True, scroll the element into the visible area first.
+        Returns True if the element was found and clicked, False otherwise.
         """
-        if scroll:
-            # Scroll the element into the visible area
-            js = f'''document.querySelector('{css_selector}').scrollIntoView();'''
-            self.evaluate(js, timeout=timeout)
-            time.sleep(0.3)
-        # Get the position of an element in the view
-        js = f'''JSON.stringify(document.querySelector('{css_selector}').getBoundingClientRect())'''
+        # The selector is embedded as a JSON string literal instead of being
+        # pasted between quotes, so selectors containing quotes or backslashes
+        # (e.g. a[title="it's here"]) no longer break the JS syntax.
+        selector_literal = json.dumps(css_selector)
+        # `behavior: 'instant'` overrides any CSS `scroll-behavior: smooth`, so
+        # the box we read right after scrolling is the final one; otherwise a
+        # smooth animation would make us click the element's old position.
+        scroll_stmt = "el.scrollIntoView({block: 'center', behavior: 'instant'});" if scroll else ''
+        # Locate the element, optionally scroll it into view, then read its box
+        # in a single round-trip. Returning null when the element is missing
+        # lets us fail loudly instead of letting the JS throw and having
+        # evaluate() silently return None.
+        js = (
+            '(() => {'
+            f'const el = document.querySelector({selector_literal});'
+            'if (!el) return null;'
+            f'{scroll_stmt}'
+            'return JSON.stringify(el.getBoundingClientRect());'
+            '})()'
+        )
         bounding_jsontext = self.evaluate(js, timeout=timeout)
-        if bounding_jsontext:
-            bounding_rect = json.loads(bounding_jsontext)
-            # Get the center position of the element
-            x = bounding_rect['x'] + bounding_rect['width'] / 2
-            y = bounding_rect['y'] + bounding_rect['height'] / 2
-            # Click the element
-            self.click_xy(x, y, timeout=timeout)
-        else:
+        if not bounding_jsontext:
             logger.error(f'Element not found by selector: {css_selector}')
+            return False
+        bounding_rect = json.loads(bounding_jsontext)
+        # Get the center position of the element
+        x = bounding_rect['x'] + bounding_rect['width'] / 2
+        y = bounding_rect['y'] + bounding_rect['height'] / 2
+        # Click the element
+        self.click_xy(x, y, timeout=timeout)
+        return True
     
     def get_window_info(self, timeout=10):
         """Get windowId and bounds information of the window.
@@ -1253,6 +1321,34 @@ class Chrome:
             time.sleep(1)
         self.requests_cache.clear()
 
+    def close_own_tabs(self):
+        """Close only the tabs opened by this instance.
+
+        Used in attach mode: tabs that belong to the attached browser are left
+        open, only the CDP connection to the adopted tab is released.
+        """
+        if self.cdpcli:
+            existing = {tab.id: tab for tab in self.cdpcli.list_tab()}
+            for tab_id in list(self.owned_tab_ids):
+                self.owned_tab_ids.discard(tab_id)
+                tab = existing.get(tab_id)
+                if tab is None:
+                    continue
+                try:
+                    logger.debug('Closing tab({}) created by this instance.'.format(tab_id))
+                    self.cdpcli.close_tab(tab)
+                except Exception as e:
+                    logger.debug('Exception when closing tab({}): {}'.format(tab_id, str(e)))
+            # Detach from an adopted tab without closing it
+            tab = self.tab
+            if tab is not None and getattr(tab, 'status', None) == tab.status_started:
+                try:
+                    logger.debug('Detaching from adopted tab({}), left open.'.format(tab.id))
+                    tab.stop()
+                except Exception as e:
+                    logger.debug('Exception when detaching tab: {}'.format(str(e)))
+        self.requests_cache.clear()
+
     def get_chrome_subpids(self):
         """获取chrome子进程ID
         """
@@ -1270,8 +1366,14 @@ class Chrome:
                 logger.debug('Exception in get_chrome_subpids: {}'.format(str(e)))
         return None
 
-    def quit(self):
-        """Close all tabs, exit the chrome
+    def quit(self, close_user_tabs=False):
+        """Close the browser.
+
+        When attached to an already-running chrome (remote_url was given), the
+        browser belongs to someone else: by default only the tabs opened by this
+        instance are closed and the CDP connection is released, the user's tabs
+        and the browser itself are left alone. Pass close_user_tabs=True to
+        force closing every tab, as the old behaviour did.
         """
         if self.chrome_process:
             # Get all subprocesses of chrome
@@ -1322,17 +1424,24 @@ class Chrome:
                         logger.warning(f"Attempt {i+1} failed to delete \"{temp_dir}\": {e}")
                         time.sleep(2)
         else:
-            try:
-                self.close_all_tabs()
-                time.sleep(1)
-            except Exception as e:
-                logger.debug('Exception in close_all_tabs: {}'.format(str(e)))
+            # No chrome process of our own: attach mode, the browser is not ours
+            if self.attach_mode and not close_user_tabs:
+                try:
+                    self.close_own_tabs()
+                except Exception as e:
+                    logger.debug('Exception in close_own_tabs: {}'.format(str(e)))
+            else:
+                try:
+                    self.close_all_tabs()
+                    time.sleep(1)
+                except Exception as e:
+                    logger.debug('Exception in close_all_tabs: {}'.format(str(e)))
         
-    def exit(self):
-        self.quit()
+    def exit(self, close_user_tabs=False):
+        self.quit(close_user_tabs=close_user_tabs)
 
-    def close(self):
-        self.exit()
+    def close(self, close_user_tabs=False):
+        self.exit(close_user_tabs=close_user_tabs)
 
     def __enter__(self):
         return self
